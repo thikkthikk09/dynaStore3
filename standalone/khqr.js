@@ -252,6 +252,70 @@
     }
   }
 
+  /**
+   * Check MD5 from the shopper's browser (not Vercel's IP).
+   * Bakong often blocks cloud servers but allows normal browsers — fixes public-site top-up.
+   */
+  async function requestBakongMd5FromBrowser(bearer, md5, qr) {
+    const hash = String(md5 || '').toLowerCase()
+    if (!bearer.startsWith('eyJ') || !/^[a-f0-9]{32}$/.test(hash)) return null
+
+    const list = md5Variants(hash, qr).slice(0, 12)
+
+    let lastJson = null
+    let matched = hash
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 22000)
+    try {
+      for (const h of list) {
+        try {
+          const res = await fetch(`${PAYMENT_CHECK.apiBase}/v1/check_transaction_by_md5`, {
+            method: 'POST',
+            mode: 'cors',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${bearer}`,
+            },
+            body: JSON.stringify({ md5: h }),
+            signal: ctrl.signal,
+          })
+          const json = await res.json()
+          lastJson = json
+          matched = h
+          if (isBakongPaid(json)) {
+            return {
+              ...json,
+              _dyna: {
+                paid: true,
+                md5: h,
+                direct: true,
+                hasJwt: true,
+                apiOrigin: 'browser',
+              },
+            }
+          }
+        } catch (err) {
+          if (err.name === 'AbortError') break
+          console.warn('direct Bakong MD5', h, err)
+        }
+      }
+    } finally {
+      clearTimeout(timer)
+    }
+
+    if (!lastJson) return null
+    return {
+      ...lastJson,
+      _dyna: {
+        paid: isBakongPaid(lastJson),
+        md5: matched,
+        direct: true,
+        hasJwt: true,
+        apiOrigin: 'browser',
+      },
+    }
+  }
+
   const MERCHANT = {
     name: 'DYNA STORE',
     city: 'PHNOM PENH',
@@ -482,10 +546,21 @@
       token: bearer.startsWith('eyJ') ? bearer : undefined,
     }
     const urls = paymentCheckUrls()
-    if (!urls.length) throw new Error('PROXY_OFFLINE')
+    if (!urls.length && !bearer.startsWith('eyJ')) throw new Error('PROXY_OFFLINE')
+
+    const preferBrowser =
+      bearer.startsWith('eyJ') &&
+      /^[a-f0-9]{32}$/.test(md5) &&
+      (isVercelHost() || isGitHubPages() || isStaticHosting())
+
+    if (preferBrowser) {
+      const directFirst = await requestBakongMd5FromBrowser(bearer, md5, qr)
+      if (directFirst && isBakongPaid(directFirst)) return directFirst
+    }
 
     let lastJson = null
     let lastOrigin = ''
+    let sawBlocked = false
     const relayUrl = String(configDefaults().relayUrl || global.DYNA_RUNTIME_CONFIG?.relayUrl || '')
       .trim()
       .replace(/\/$/, '')
@@ -512,7 +587,9 @@
           serverHasJwt = true
           markProxyOnline(origin, true)
         }
-        if (!isBakongBlockedResponse(json)) {
+        if (isBakongBlockedResponse(json)) {
+          sawBlocked = true
+        } else {
           const paid = isBakongPaid(json)
           return {
             ...json,
@@ -530,6 +607,11 @@
       } finally {
         clearTimeout(timer)
       }
+    }
+
+    if (bearer.startsWith('eyJ') && /^[a-f0-9]{32}$/.test(md5) && (sawBlocked || !lastJson || !isBakongPaid(lastJson))) {
+      const direct = await requestBakongMd5FromBrowser(bearer, md5, qr)
+      if (direct && (isBakongPaid(direct) || !isBakongBlockedResponse(direct))) return direct
     }
 
     if (lastJson) {
@@ -1562,7 +1644,7 @@
 
   function creditWalletAfterPaid() {
     if (paymentCredited) return
-    onPaymentPaid({ manualConfirm: true })
+    void confirmPayment()
   }
 
   function onPaymentPaid(data) {
@@ -1662,7 +1744,7 @@
           /403|RELAY|cloud/i.test(hint)
             ? hint
             : isVercelHost()
-              ? 'Paid? Tap Check payment now — add BAKONG_TOKEN on Vercel if this repeats'
+              ? 'Paid? Wait ~30s, tap Check payment now — we verify from your browser (not Vercel server)'
               : 'Paid? Tap Check payment now — keep npm start running',
         )
         document.getElementById('khqrAdvanced')?.classList.remove('hidden')
