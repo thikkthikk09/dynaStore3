@@ -9,7 +9,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <base href="./" id="dyna-base" />
-  <script src="standalone/bakong.config.js"></script>
+  <!-- Config + app scripts load via standalone/boot.js (safe if /api is offline) -->
+  <link rel="stylesheet" href="standalone/styles.css" />
   <style>
     html, body { margin: 0; min-height: 100%; background: #0a0b0f; color: #f4f4f6; font-family: system-ui, sans-serif; }
     .app { min-height: 100vh; display: flex; flex-direction: column; }
@@ -25,22 +26,21 @@
   </script>
   <script>
     (function () {
-      if (location.hostname.endsWith('.github.io')) return
-      if (location.hostname.endsWith('.vercel.app')) return
-      var store = 'http://127.0.0.1:8787/index.html'
-      var onStore =
-        (location.hostname === '127.0.0.1' || location.hostname === 'localhost') &&
-        location.port === '8787'
-      if (onStore) return
-      if (location.protocol === 'file:') {
-        location.replace(store)
-        return
-      }
-      fetch('http://127.0.0.1:8787/api/health', { mode: 'cors' })
-        .then(function (r) {
-          if (r.ok) location.replace(store)
-        })
-        .catch(function () {})
+      window.DYNA_LIVE_PREVIEW =
+        /serverWindowId=/.test(location.search) ||
+        location.port === '3000' ||
+        location.port === '5500' ||
+        location.port === '5173'
+      try {
+        var bad = localStorage.getItem('dyna_api_base') || ''
+        if (/127\.0\.0\.1:3000|localhost:3000|:5500|:5173|dyna-store36/.test(bad)) {
+          localStorage.removeItem('dyna_api_base')
+        }
+        var pub = 'https://dyna-store3.vercel.app'
+        if (window.DYNA_LIVE_PREVIEW) {
+          localStorage.setItem('dyna_api_base', pub)
+        }
+      } catch (e) {}
     })()
   </script>
 </head>
@@ -89,17 +89,14 @@
     </section>
 
     <section class="topup-section" id="topup">
-      <div class="server-status server-status--offline hidden" id="serverStatus" role="status">
-        <strong>Checking payment API…</strong>
-        <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>
-      </div>
+      <div class="server-status server-status--offline hidden" id="serverStatus" role="status"></div>
       <div class="pending-topup-banner hidden" id="pendingTopupBanner">
         <strong>Already paid?</strong> Amount <span class="pending-topup-amount">$0.01</span>
         · MD5 <code class="pending-md5" id="pendingMd5Display">—</code>
-        <p class="pending-check-status" id="pendingCheckStatus">Tap below — we check Bakong MD5 and add balance</p>
+        <p class="pending-check-status" id="pendingCheckStatus">Paid in Bakong? Balance syncs automatically every 2s. Copy the 32-char MD5 from the QR popup (not the short hash # on the receipt).</p>
         <div class="pending-claim-row">
-          <input type="text" id="manualMd5Input" class="server-setup-input" placeholder="Paste 32-char MD5 from QR screen" spellcheck="false" />
-          <button type="button" class="server-retry-btn" id="claimTopupBtn">Check MD5 &amp; add balance</button>
+          <input type="text" id="manualMd5Input" class="server-setup-input" placeholder="32-char MD5 from QR popup, or receipt hash (f90b0a0a…)" spellcheck="false" />
+          <button type="button" class="server-retry-btn" id="claimTopupBtn">Sync payment &amp; add balance</button>
         </div>
       </div>
       <div class="topup-wallet-card">
@@ -113,7 +110,7 @@
       <div class="topup-grid" id="topupGrid" role="group" aria-label="Top up amount in USD"></div>
       <label class="khqr-field topup-bakong-field">
         <span>Bakong account ID <em>(exact ID from Bakong — e.g. name@aba)</em></span>
-        <input type="text" id="bakongAccount" placeholder="ben_sothida@aba" autocomplete="off" />
+        <input type="text" id="bakongAccount" placeholder="ben_sothida@bkrt" value="" autocomplete="off" />
       </label>
       <label class="khqr-field topup-bakong-field hidden" aria-hidden="true">
         <span>Bakong register email</span>
@@ -233,7 +230,7 @@
         <button type="button" class="khqr-check" id="khqrCheckNow">Check payment now</button>
         <button type="button" class="khqr-credit" id="khqrCreditPaid">I paid — verify &amp; add balance</button>
         <div class="khqr-md5-block" id="khqrMd5Block">
-          <p class="khqr-md5-label">Payment MD5 <em>(for balance check)</em></p>
+          <p class="khqr-md5-label">Payment MD5 <em>(copy this — not the short “hash #” on bank receipt)</em></p>
           <p class="khqr-md5" id="khqrMd5">—</p>
           <button type="button" class="khqr-copy-sm" id="khqrCopyMd5">Copy MD5</button>
         </div>
@@ -250,7 +247,7 @@
             </label>
             <label class="khqr-field">
               <span>Proxy</span>
-              <input type="text" id="bakongProxy" placeholder="http://127.0.0.1:8787/api/check-md5" />
+              <input type="text" id="bakongProxy" placeholder="/api/check-md5 or https://your-app.vercel.app/api/check-md5" />
             </label>
             <input type="hidden" id="bakongVerifyCode" value="" />
             <button type="button" class="khqr-renew hidden" id="bakongFixToken">Fix token</button>
@@ -267,19 +264,9 @@
     (function () {
       var href = location.href.split('#')[0].split('?')[0]
       var slash = href.lastIndexOf('/')
-      var root = slash >= 0 ? href.slice(0, slash + 1) : './'
-      window.DYNA_ASSET_ROOT = root
-      var s = document.createElement('script')
-      s.src = root + 'standalone/boot.js'
-      s.onerror = function () {
-        var m = document.getElementById('bootMsg')
-        if (m) {
-          m.textContent =
-            'Could not load app. Run start.bat then open http://127.0.0.1:8787/index.html'
-        }
-      }
-      document.body.appendChild(s)
+      window.DYNA_ASSET_ROOT = slash >= 0 ? href.slice(0, slash + 1) : './'
     })()
   </script>
+  <script src="standalone/boot.js"></script>
 </body>
 </html>

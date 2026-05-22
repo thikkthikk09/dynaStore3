@@ -9,7 +9,10 @@
   const MAX_ZIP_GB = 500
   const IDB_MAX_BYTES = 200 * 1024 * 1024
   const CHUNK_BYTES = 64 * 1024 * 1024
-  const DEFAULT_ORIGIN = 'http://127.0.0.1:8787'
+  const LOCAL_DEV_ORIGIN =
+    typeof localStorage !== 'undefined'
+      ? String(localStorage.getItem('dyna_api_base') || '').replace(/\/$/, '')
+      : ''
 
   let cachedOrigin = null
 
@@ -91,7 +94,7 @@
     if (typeof location !== 'undefined' && location.origin?.startsWith('http')) {
       list.push(location.origin)
     }
-    list.push(DEFAULT_ORIGIN)
+    if (LOCAL_DEV_ORIGIN) list.push(LOCAL_DEV_ORIGIN)
     for (const origin of [...new Set(list)]) {
       try {
         const ctrl = new AbortController()

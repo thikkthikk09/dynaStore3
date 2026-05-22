@@ -4,7 +4,7 @@ Game shop with **Bakong KHQR** top-up and **automatic balance** after payment (M
 
 ## Why GitHub Pages shows “Payment server offline”
 
-**GitHub Pages only hosts HTML/CSS/JS.** It cannot run `start.bat` or `server.mjs`.  
+**GitHub Pages only hosts HTML/CSS/JS.** It cannot run `server.mjs` or payment APIs.  
 Bakong’s MD5 API blocks browsers (CORS), so you need a small **cloud API** for payment checks.
 
 You use **two free hosts**:
@@ -58,14 +58,13 @@ Open your Pages URL. The banner should turn green: **Payment check ready.**
 
 ## 3. Local development (optional)
 
-On your PC you can still use `start.bat` instead of Vercel:
+On your PC you can use **`npm start`** instead of Vercel:
 
-1. `copy standalone\bakong.config.example.js standalone\bakong.config.local.js`
-2. Edit `bakong.config.local.js` (email, account, optional `proxy: http://127.0.0.1:8787/api/check-md5`)
-3. Double-click **`start.bat`**
-4. Open **http://127.0.0.1:8787/index.html**
+1. Copy `.env.example` → `.env` and fill `BAKONG_TOKEN`, `BAKONG_EMAIL`, `BAKONG_REGISTER_TOKEN`
+2. `npm start` (runs `server.mjs` on port 8787 by default)
+3. Open the URL printed in the terminal (e.g. **http://127.0.0.1:8787/index.html**)
 
-`bakong.config.local.js` overrides `bakong.config.js` on your machine.
+Optional: `standalone/bakong.config.local.js` overrides `bakong.config.js` on your machine.
 
 ---
 

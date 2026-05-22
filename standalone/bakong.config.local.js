@@ -1,18 +1,19 @@
-/** Local secrets — not committed to git. */
-
-window.DYNA_BAKONG_CONFIG = {  token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhIjp7ImlkIjoiMWJkOTRjMDY2ODViNGIwMiJ9LCJpYXQiOjE3Nzk0MTY1ODksImV4cCI6MTc4NzE5MjU4OX0.Qv3l-JRX6bjjz7lL_vMmUta1FfXHjEYN5X9LzNQXYIo',
-
-  registerToken: 'rbk82qAU7sFjn7CG2mAP-CA0_mKVz_RNVRcNlA60b3oNkY',
-
-  email: 'thikkthikk09@gmail.com',
-
-  organization: 'Dyna Store',
-
-  project: 'dyna_store',
-
+/**
+ * Local overrides (gitignored).
+ *
+ * YOU WROTE THEM BACKWARDS IN CHAT — USE THIS MAPPING:
+ *   token         = JWT  (starts with eyJ) — for MD5 payment check
+ *   registerToken = rbk  (starts with rbk) — only to renew JWT
+ */
+window.DYNA_BAKONG_CONFIG = {
+  ...(window.DYNA_BAKONG_CONFIG || {}),
+  /* apiBase: set at runtime in boot.js — preview/Vercel → public URL, port 8787 → local */
+  proxy: '',
   account: 'ben_sothida@bkrt',
-
-  proxy: 'http://127.0.0.1:8787/api/check-md5',
-
+  organization: 'Dyna Store',
+  project: 'dyna_store',
+  email: 'thikkthikk09@gmail.com',
+  token:
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhIjp7ImlkIjoiMWJkOTRjMDY2ODViNGIwMiJ9LCJpYXQiOjE3Nzk0NDg5MDgsImV4cCI6MTc4NzIyNDkwOH0.YE6b6OeaKlqiTVWR2-5fM2_NouOzGVHNoESKmNDXuJg',
+  registerToken: 'rbk82qAU7sFjn7CG2mAP-CA0_mKVz_RNVRcNlA60b3oNkY',
 }
-

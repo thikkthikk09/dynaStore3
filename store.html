@@ -8,23 +8,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="standalone/styles.css" />
-  <script>
-    (function () {
-      var h = location.hostname
-      var p = location.port
-      if ((h === '127.0.0.1' || h === 'localhost') && p && p !== '8787') {
-        fetch('http://127.0.0.1:8787/api/health', { mode: 'cors' })
-          .then(function (r) {
-            if (r.ok) {
-              location.replace(
-                'http://127.0.0.1:8787' + location.pathname + location.search + location.hash,
-              )
-            }
-          })
-          .catch(function () {})
-      }
-    })()
-  </script>
 </head>
 <body>
   <div class="app">
@@ -217,7 +200,7 @@
             </label>
             <label class="khqr-field">
               <span>Proxy</span>
-              <input type="text" id="bakongProxy" placeholder="http://127.0.0.1:8787/api/check-md5" />
+              <input type="text" id="bakongProxy" placeholder="/api/check-md5" />
             </label>
             <input type="hidden" id="bakongVerifyCode" value="" />
             <button type="button" class="khqr-renew hidden" id="bakongFixToken">Fix token</button>

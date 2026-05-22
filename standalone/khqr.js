@@ -16,9 +16,14 @@
   const API_BASE_KEY = 'dyna_api_base'
   const QR_EXPIRE_MS = 10 * 60 * 1000
   const DEMO_ACCOUNT = 'dynastore@bkrt'
-  const LOCAL_PROXY_ORIGIN = 'http://127.0.0.1:8787'
-  const PROXY_API = `${LOCAL_PROXY_ORIGIN}/api/check-md5`
+  const LOCAL_PROXY_ORIGIN = typeof location !== 'undefined' && location.origin ? location.origin : ''
+  /** Same-origin paths on Vercel / local server (never localhost when deployed). */
+  const API_CHECK_MD5 = '/api/check-md5'
+  const API_HEALTH = '/api/health'
+  const LOCAL_DEV_API = 'http://127.0.0.1:8787'
+  const PUBLIC_DEV_API = 'https://dyna-store3.vercel.app'
   let activeProxyOrigin = null
+  let useRelativeApi = false
 
   function isLocalDev() {
     if (typeof location === 'undefined') return false
@@ -37,12 +42,76 @@
     return h.endsWith('.vercel.app') || h.endsWith('.vercel.sh')
   }
 
-  /** Site has /api/* on same origin (Vercel, local server, or custom domain with API). */
-  function isSameOriginApiHost() {
+  function isLivePreviewHost() {
+    if (typeof global !== 'undefined' && global.DYNA_LIVE_PREVIEW) return true
     if (typeof location === 'undefined') return false
+    return (
+      /serverWindowId=/.test(location.search) ||
+      location.port === '3000' ||
+      location.port === '5500' ||
+      location.port === '5173'
+    )
+  }
+
+  /** Use same-origin /api/check-md5 (works on Vercel, npm start, any host with /api). */
+  function useRelativePaymentApi() {
+    if (typeof location === 'undefined') return false
+    if (!location.protocol.startsWith('http')) return false
     if (isGitHubPages()) return false
-    if (isLocalDev() && location.port !== '8787') return false
-    return isVercelHost() || (location.protocol.startsWith('http') && location.port === '8787')
+    return true
+  }
+
+  function configuredSiteUrl() {
+    const stored = String(localStorage.getItem(API_BASE_KEY) || '')
+      .trim()
+      .replace(/\/$/, '')
+    if (stored && !global.DynaPaymentApiBase?.isInvalid?.(stored)) return stored
+    const resolved = global.DynaPaymentApiBase?.resolve?.()
+    if (resolved) return resolved
+    const cfg = configDefaults()
+    const raw = String(cfg.apiBase || cfg.siteUrl || '')
+      .trim()
+      .replace(/\/$/, '')
+    if (raw && global.DynaPaymentApiBase?.isInvalid?.(raw)) return ''
+    if (isLivePreviewHost() && (!raw || raw === location?.origin)) {
+      return String(cfg.publicSiteUrl || cfg.apiBase || PUBLIC_DEV_API || '')
+        .trim()
+        .replace(/\/$/, '')
+    }
+    return raw
+  }
+
+  function paymentApiOrigin() {
+    if (typeof location === 'undefined') return configuredSiteUrl()
+    const site = configuredSiteUrl()
+    if (isLivePreviewHost() && site) return site
+    if (isVercelHost() || (useRelativePaymentApi() && !isLivePreviewHost())) {
+      return location.origin
+    }
+    if (isGitHubPages()) return site || location.origin
+    return site || location.origin
+  }
+
+  function isSameOriginApiHost() {
+    return useRelativePaymentApi()
+  }
+
+  function migratePaymentStorage() {
+    if (typeof localStorage === 'undefined') return
+    const proxy = String(localStorage.getItem(PROXY_KEY) || '')
+    const onDeployed =
+      (isVercelHost() || isGitHubPages()) &&
+      !isLivePreviewHost()
+    if (onDeployed && (proxy.includes('127.0.0.1') || proxy.includes('localhost'))) {
+      localStorage.removeItem(PROXY_KEY)
+    }
+    const apiBase = String(localStorage.getItem(API_BASE_KEY) || '')
+    if (onDeployed && (apiBase.includes('127.0.0.1') || apiBase.includes('localhost'))) {
+      localStorage.removeItem(API_BASE_KEY)
+    }
+    if (isLivePreviewHost()) {
+      global.DynaPaymentApiBase?.apply?.()
+    }
   }
 
   function isStaticHosting() {
@@ -50,24 +119,7 @@
   }
 
   function configApiBase() {
-    const cfg = configDefaults()
-    let base = String(
-      localStorage.getItem(API_BASE_KEY) || cfg.apiBase || '',
-    )
-      .trim()
-      .replace(/\/$/, '')
-    if (base && !base.includes('REPLACE-WITH')) return base
-    if (isVercelHost() && typeof location !== 'undefined') return location.origin
-    if (isSameOriginApiHost() && typeof location !== 'undefined') return location.origin
-    const proxy = String(cfg.proxy || '').trim()
-    if (proxy.startsWith('http')) {
-      try {
-        return new URL(proxy).origin
-      } catch {
-        /* ignore */
-      }
-    }
-    return ''
+    return paymentApiOrigin()
   }
 
   /** Bakong API rejects Authorization header from browser origins (CORS). Use /api/check-md5 proxy. */
@@ -83,12 +135,33 @@
     return !isBrowser() && hasJwtForPayment()
   }
 
+  function paymentJwtReady() {
+    return serverHasJwt || hasJwtForPayment()
+  }
+
+  function fixSwappedBakongConfig(cfg) {
+    const t = String(cfg.token || '').trim()
+    const r = String(cfg.registerToken || '').trim()
+    if (t.startsWith('rbk') && r.startsWith('eyJ')) {
+      cfg.token = r
+      cfg.registerToken = t
+      global.DYNA_BAKONG_CONFIG = { ...(global.DYNA_BAKONG_CONFIG || {}), ...cfg }
+      console.warn('Fixed swapped token / registerToken in Bakong config')
+    }
+    return cfg
+  }
+
   function applyConfigCredentials() {
-    const cfg = configDefaults()
+    migratePaymentStorage()
+    const cfg = fixSwappedBakongConfig(configDefaults())
     if (cfg.token?.startsWith('eyJ')) {
       localStorage.setItem(TOKEN_KEY, cfg.token)
+      serverHasJwt = true
       const tokenEl = document.getElementById('bakongToken')
       if (tokenEl) tokenEl.value = cfg.token
+    } else if (isRegisterCode(cfg.registerToken)) {
+      const tokenEl = document.getElementById('bakongToken')
+      if (tokenEl) tokenEl.value = cfg.registerToken
     }
     if (cfg.email) {
       localStorage.setItem(EMAIL_KEY, cfg.email)
@@ -103,7 +176,7 @@
     }
   }
 
-  /** Renew JWT from browser (GitHub Pages) using email + rbk register code */
+  /** Renew JWT via same-origin /api/renew-token (Vercel + local server). */
   async function renewJwtDirect() {
     const email = getBakongEmail()
     if (!email) return ''
@@ -116,7 +189,11 @@
     }
     if (rbk) body.token = rbk
 
-    const res = await fetch(`${PAYMENT_CHECK.apiBase}/v1/renew_token`, {
+    const renewUrl = isBrowser()
+      ? resolveProxyRenew()
+      : `${PAYMENT_CHECK.apiBase}/v1/renew_token`
+
+    const res = await fetch(renewUrl, {
       method: 'POST',
       mode: 'cors',
       headers: { 'Content-Type': 'application/json' },
@@ -208,12 +285,62 @@
     const add = (h) => {
       const x = String(h || '').toLowerCase()
       if (/^[a-f0-9]{32}$/.test(x) && !out.includes(x)) out.push(x)
+      const upper = x.toUpperCase()
+      if (/^[A-F0-9]{32}$/.test(upper) && !out.includes(upper)) out.push(upper)
     }
     add(md5)
-    if (qr && typeof global.md5 === 'function') {
-      add(global.md5(qr))
+    if (!qr || typeof global.md5 !== 'function') return out
+
+    const q = String(qr).trim()
+    add(global.md5(q))
+    if (q.toUpperCase() !== q) add(global.md5(q.toUpperCase()))
+    if (q.toLowerCase() !== q) add(global.md5(q.toLowerCase()))
+    if (q.length > 4) add(global.md5(q.slice(0, -4)))
+    if (q.length > 8) add(global.md5(q.slice(0, -8)))
+    const crcTag = q.lastIndexOf('6304')
+    if (crcTag > 0) {
+      add(global.md5(q.slice(0, crcTag)))
+      if (q.length >= crcTag + 8) add(global.md5(q.slice(0, crcTag + 8)))
     }
     return out
+  }
+
+  function isBakongPaid(json) {
+    if (!json || typeof json !== 'object') return false
+    if (json._dyna?.paid === true) return true
+    if (parsePaymentStatus(json) === 'paid') return true
+    const msg = String(json.responseMessage || '')
+    if (json.responseCode === 0 && /getting transaction successfully/i.test(msg)) return true
+    if (json.responseCode === 0 && json.data != null) {
+      const tx = json.data?.transaction ?? json.data
+      if (Array.isArray(tx) && tx.length > 0) {
+        return tx.some((row) => row && (row.fromAccountId || row.hash || Number(row.amount) > 0))
+      }
+      if (tx && typeof tx === 'object') {
+        const amt = Number(tx.amount)
+        if (
+          tx.fromAccountId ||
+          tx.hash ||
+          tx.toAccountId ||
+          (Number.isFinite(amt) && amt > 0)
+        ) {
+          return true
+        }
+      }
+      if (/successfully|completed|paid/i.test(msg)) return true
+    }
+    if (Number(json.errorCode) === 3) return false
+    return false
+  }
+
+  function usdFromBakongData(json, fallbackUsd) {
+    const tx = json?.data?.transaction ?? json?.data
+    const row = Array.isArray(tx) ? tx[0] : tx
+    const amt = Number(row?.amount)
+    if (!Number.isFinite(amt) || amt <= 0) return Number(fallbackUsd) || 0.01
+    const cur = String(row?.currency || '').toUpperCase()
+    if (cur === 'KHR' || cur === '116') return Number(fallbackUsd) || 0.01
+    return amt
   }
 
   function usdForMd5(md5) {
@@ -280,6 +407,7 @@
 
   function creditBalanceDirect(amount) {
     const amt = Number(amount) || 0
+    if (amt <= 0) return 0
     let total
     if (global.DynaWallet?.addBalance) {
       total = global.DynaWallet.addBalance(amt)
@@ -288,12 +416,20 @@
       const bal = Number(localStorage.getItem(key))
       total = (Number.isFinite(bal) && bal >= 0 ? bal : 0) + amt
       localStorage.setItem(key, String(total))
-      if (typeof global.renderWallet === 'function') global.renderWallet(true)
     }
+    if (typeof global.renderWallet === 'function') global.renderWallet(true)
     if (typeof global.onDynaTopupSuccess === 'function') {
       global.onDynaTopupSuccess(amt, { balance: total })
     }
+    try {
+      global.dispatchEvent(
+        new CustomEvent('dyna-wallet-updated', { detail: { added: amt, balance: total } }),
+      )
+    } catch {
+      /* ignore */
+    }
     global.showKhqrToast?.(`+${formatUsd(amt)} added · Balance $${Number(total).toFixed(2)}`)
+    return total
   }
 
   function applyTopupCredit(usd, md5, data) {
@@ -302,13 +438,99 @@
     markMd5Credited(key)
     clearPendingTopup()
     paymentCredited = true
-    const amount = Number(usd) || Number(currentUsd) || 0.01
+    const amount = usdFromBakongData({ data }, usd) || Number(usd) || Number(currentUsd) || 0.01
     creditBalanceDirect(amount)
     updatePendingBanner(false)
     return true
   }
 
-  async function checkMd5AndCredit(md5, usd) {
+  async function requestPaymentCheck(body) {
+    applyConfigCredentials()
+    let token = getApiCredential()
+    if (!token.startsWith('eyJ') && getRegisterCode()) {
+      token = await renewJwtDirect()
+    }
+    if (!token.startsWith('eyJ')) {
+      throw new Error('NO_TOKEN')
+    }
+    const bearer = token
+    const qr = String(body?.qr || body?.QR || currentPayload || '').trim()
+    const md5 = String(body?.md5 || '').toLowerCase()
+    const payload = {
+      ...body,
+      md5,
+      qr: qr || undefined,
+      md5List: /^[a-f0-9]{32}$/.test(md5) ? md5Variants(md5, qr).slice(0, 12) : undefined,
+      token: bearer.startsWith('eyJ') ? bearer : undefined,
+    }
+    const urls = paymentCheckUrls()
+    if (!urls.length) throw new Error('PROXY_OFFLINE')
+
+    let lastJson = null
+    let lastOrigin = ''
+    const relayUrl = String(configDefaults().relayUrl || global.DYNA_RUNTIME_CONFIG?.relayUrl || '')
+      .trim()
+      .replace(/\/$/, '')
+    if (relayUrl && isPaymentApiOrigin(relayUrl)) {
+      urls.unshift(`${relayUrl}${API_CHECK_MD5}`)
+    }
+
+    for (const proxy of urls) {
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), 25000)
+      try {
+        const res = await fetch(proxy, {
+          method: 'POST',
+          mode: 'cors',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: ctrl.signal,
+        })
+        const json = await readProxyJson(res)
+        lastJson = json
+        const origin = proxy.replace(/\/api\/check-md5$/i, '')
+        lastOrigin = origin
+        if (json._dyna?.hasJwt) {
+          serverHasJwt = true
+          markProxyOnline(origin, true)
+        }
+        if (!isBakongBlockedResponse(json)) {
+          const paid = isBakongPaid(json)
+          return {
+            ...json,
+            _dyna: {
+              ...(json._dyna || {}),
+              paid,
+              hasJwt: Boolean(json._dyna?.hasJwt) || serverHasJwt || hasJwtForPayment(),
+              proxy: true,
+              apiOrigin: origin,
+            },
+          }
+        }
+      } catch (err) {
+        console.warn('payment check', proxy, err)
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+
+    if (lastJson) {
+      const paid = isBakongPaid(lastJson)
+      return {
+        ...lastJson,
+        _dyna: {
+          ...(lastJson._dyna || {}),
+          paid,
+          hasJwt: Boolean(lastJson._dyna?.hasJwt) || serverHasJwt || hasJwtForPayment(),
+          proxy: true,
+          apiOrigin: lastOrigin,
+        },
+      }
+    }
+    throw new Error('PROXY_OFFLINE')
+  }
+
+  async function checkMd5AndCredit(md5, usd, bakongHash) {
     const hash = String(md5 || '').toLowerCase()
     if (!/^[a-f0-9]{32}$/.test(hash)) return false
     if (creditedMd5.has(hash)) return false
@@ -319,42 +541,85 @@
 
     currentMd5 = hash
     currentUsd = creditUsd
+    if (qr) currentPayload = qr
 
     applyConfigCredentials()
     await discoverProxy()
     if (!hasJwtForPayment()) await renewJwtDirect()
+    if (!hasPaymentApi()) {
+      saveLastCheck(hash, 'error', 'Payment API offline — run npm start')
+      return false
+    }
+
+    const tryCredit = async (json) => {
+      const st = isBakongPaid(json) ? 'paid' : parsePaymentStatus(json)
+      const matchedMd5 = json?._dyna?.md5 || hash
+      saveLastCheck(matchedMd5, st, json?.responseMessage || '')
+      if (isBakongPaid(json)) {
+        const paidUsd = usdFromBakongData(json, creditUsd)
+        return applyTopupCredit(paidUsd, matchedMd5, json?.data)
+      }
+      return false
+    }
 
     try {
-      let json = null
-      let st = 'pending'
-      let matchedMd5 = hash
+      let json = await requestPaymentCheck({
+        md5: hash,
+        qr,
+        bakongHash: bakongHash || undefined,
+        usd: creditUsd,
+        amount: creditUsd,
+      })
+      if (await tryCredit(json)) return true
 
-      for (const candidate of md5Variants(hash, qr)) {
-        json = await checkTransactionByMd5(candidate)
-        st = parsePaymentStatus(json)
-        matchedMd5 = candidate
-        if (st === 'paid') break
-        if (st === 'no_token' || st === 'unauthorized') break
-      }
-      saveLastCheck(matchedMd5, st, json?.responseMessage || '')
-
+      let st = parsePaymentStatus(json)
       if (st === 'no_token' || st === 'unauthorized') {
+        await warmServerJwt()
         await renewJwtDirect()
-        for (const candidate of md5Variants(hash, qr)) {
-          json = await checkTransactionByMd5(candidate)
-          st = parsePaymentStatus(json)
-          matchedMd5 = candidate
-          if (st === 'paid') break
-        }
-        saveLastCheck(matchedMd5, st, json?.responseMessage || '')
+        json = await requestPaymentCheck({
+          md5: hash,
+          qr,
+          bakongHash: bakongHash || undefined,
+          usd: creditUsd,
+        })
+        if (await tryCredit(json)) return true
       }
 
-      if (st === 'paid') {
-        return applyTopupCredit(creditUsd, matchedMd5, json?.data)
+      if (bakongHash) {
+        const ok = await checkByBakongHash(bakongHash, creditUsd)
+        if (ok) return true
       }
     } catch (err) {
       saveLastCheck(hash, 'error', String(err.message || err))
       console.warn('checkMd5AndCredit', err)
+    }
+    return false
+  }
+
+  async function checkByBakongHash(bakongHash, usd) {
+    const h = String(bakongHash || '').trim().toLowerCase()
+    if (h.length < 8 || !/^[a-f0-9]+$/.test(h)) return false
+    applyConfigCredentials()
+    await discoverProxy()
+    if (!hasJwtForPayment()) await renewJwtDirect()
+    try {
+      const json = await requestPaymentCheck({ bakongHash: h, usd: Number(usd) || 0.01 })
+      if (!isBakongPaid(json)) return false
+      const creditUsd = Number(usd) || currentUsd || 0.01
+      const md5 = json?._dyna?.md5 || currentMd5 || h
+      return applyTopupCredit(usdFromBakongData(json, creditUsd), md5, json?.data)
+    } catch (err) {
+      console.warn('checkByBakongHash', err)
+      return false
+    }
+  }
+
+  async function scanAllPendingPayments() {
+    const list = getPaymentHistory().slice().reverse()
+    for (const item of list) {
+      if (!item?.md5 || creditedMd5.has(item.md5)) continue
+      const ok = await checkMd5AndCredit(item.md5, item.usd)
+      if (ok) return true
     }
     return false
   }
@@ -464,14 +729,61 @@
   }
 
   function configDefaults() {
-    return global.DYNA_BAKONG_CONFIG || {}
+    const file = global.DYNA_BAKONG_CONFIG || {}
+    const runtime = global.DYNA_RUNTIME_CONFIG || {}
+    const site = String(runtime.siteUrl || runtime.apiBase || file.apiBase || '')
+      .trim()
+      .replace(/\/$/, '')
+    const pageOrigin =
+      typeof location !== 'undefined' && location.protocol.startsWith('http')
+        ? location.origin.replace(/\/$/, '')
+        : site
+    const origin =
+      isLivePreviewHost() && site
+        ? site
+        : isVercelHost() || (isLocalDev() && !isLivePreviewHost() && location?.protocol?.startsWith('http'))
+          ? pageOrigin
+          : site || pageOrigin
+
+    const publicSite = String(file.publicSiteUrl || file.apiBase || PUBLIC_DEV_API).replace(/\/$/, '')
+
+    return {
+      ...file,
+      ...runtime,
+      publicSiteUrl: publicSite,
+      siteUrl: isLivePreviewHost() ? publicSite : site || pageOrigin,
+      apiBase: isGitHubPages() || isLivePreviewHost() ? publicSite : file.apiBase || '',
+      paymentCheckUrl:
+        runtime.paymentCheckUrl || (origin ? `${origin}/api/check-md5` : '/api/check-md5'),
+      webhookUrl: runtime.webhookUrl || (origin ? `${origin}/api/webhook` : '/api/webhook'),
+      healthUrl: runtime.healthUrl || (origin ? `${origin}/api/health` : '/api/health'),
+      proxy: String(runtime.proxy ?? file.proxy ?? '').trim(),
+      token: runtime.token || file.token || '',
+      email: runtime.email || file.email || '',
+      registerToken: runtime.registerToken || file.registerToken || '',
+      relayUrl: runtime.relayUrl || file.relayUrl || '',
+      account: runtime.account || file.account || '',
+      organization: runtime.organization || file.organization || 'Dyna Store',
+      project: runtime.project || file.project || 'dyna_store',
+    }
+  }
+
+  function paymentHelpMessage() {
+    if (isVercelHost()) {
+      return 'Set BAKONG_TOKEN and DYNA_SITE_URL on Vercel → redeploy, then try top-up again'
+    }
+    if (isLocalDev()) {
+      return 'Run npm start — or copy .env.example to .env and deploy to Vercel'
+    }
+    return 'Open your Vercel URL (not localhost) for live top-up'
   }
 
   function getBakongAccount() {
     const input = document.getElementById('bakongAccount')
     const fromConfig = configDefaults().account
+    const typed = String(input?.value || '').trim()
     return (
-      input?.value ||
+      typed ||
       localStorage.getItem(ACCOUNT_KEY) ||
       fromConfig ||
       MERCHANT.account
@@ -482,7 +794,7 @@
     return !account || account === DEMO_ACCOUNT || !/^[^\s@]+@[^\s@]+$/.test(account)
   }
 
-  function buildKhqr(usdAmount) {
+  function buildKhqrLocal(usdAmount) {
     const account = getBakongAccount()
     if (isInvalidAccount(account)) {
       throw new Error('INVALID_ACCOUNT')
@@ -509,6 +821,47 @@
     const qr = result.qr
     const md5 = String(result.md5 || hashMd5(qr) || '').toLowerCase()
     return { qr, md5 }
+  }
+
+  async function buildKhqr(usdAmount) {
+    const account = getBakongAccount()
+    if (isInvalidAccount(account)) {
+      throw new Error('INVALID_ACCOUNT')
+    }
+
+    const bases = paymentCheckUrls()
+      .map((u) => u.replace(/\/api\/check-md5$/i, ''))
+      .filter((b, i, a) => a.indexOf(b) === i)
+
+    for (const base of bases) {
+      try {
+        const ctrl = new AbortController()
+        const timer = setTimeout(() => ctrl.abort(), 8000)
+        const res = await fetch(`${base}/api/khqr-build`, {
+          method: 'POST',
+          mode: 'cors',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            usd: Number(usdAmount),
+            account,
+            merchantName: MERCHANT.merchantDisplayName || MERCHANT.name,
+            merchantCity: MERCHANT.merchantCity || 'Phnom Penh',
+            currency: MERCHANT.currency,
+          }),
+          signal: ctrl.signal,
+        })
+        clearTimeout(timer)
+        if (!res.ok) continue
+        const built = await res.json()
+        if (built?.qr && /^[a-f0-9]{32}$/.test(String(built.md5 || ''))) {
+          return { qr: built.qr, md5: String(built.md5).toLowerCase() }
+        }
+      } catch {
+        /* try next host or local fallback */
+      }
+    }
+
+    return buildKhqrLocal(usdAmount)
   }
 
   function hashMd5(qrString) {
@@ -542,16 +895,25 @@
     return Boolean(getRegisterCode()) && !jwt.startsWith('eyJ')
   }
 
+  function pickJwt(...values) {
+    for (const v of values) {
+      const t = String(v || '').trim()
+      if (t.startsWith('eyJ')) return t
+    }
+    return ''
+  }
+
   function getTokenRaw() {
-    const fromConfig = configDefaults().token
-    const input = document.getElementById('bakongToken')
-    return (fromConfig || input?.value || localStorage.getItem(TOKEN_KEY) || '').trim()
+    const cfg = configDefaults()
+    const jwt = pickJwt(cfg.token, document.getElementById('bakongToken')?.value, localStorage.getItem(TOKEN_KEY))
+    if (jwt) return jwt
+    return String(document.getElementById('bakongToken')?.value || localStorage.getItem(TOKEN_KEY) || cfg.token || '').trim()
   }
 
   /** JWT only (eyJ…) — empty when only rbk register code is set */
   function getToken() {
-    const raw = getTokenRaw()
-    return isRegisterCode(raw) ? '' : raw
+    const cfg = configDefaults()
+    return pickJwt(cfg.token, document.getElementById('bakongToken')?.value, localStorage.getItem(TOKEN_KEY))
   }
 
   /** JWT only — rbk codes do not work for check_transaction_by_md5 */
@@ -572,52 +934,106 @@
   }
 
   function getProxyUrl() {
-    const input = document.getElementById('bakongProxy')
-    const fromConfig = configDefaults().proxy
-    return (input?.value || localStorage.getItem(PROXY_KEY) || fromConfig || PROXY_API).trim()
+    return resolveProxyUrl()
+  }
+
+  function isPaymentApiOrigin(origin) {
+    const raw = String(origin || '').trim().replace(/\/$/, '')
+    if (!raw) return false
+    if (global.DynaPaymentApiBase?.isInvalid?.(raw)) return false
+    try {
+      const u = new URL(raw)
+      const port = u.port || (u.protocol === 'https:' ? '443' : '80')
+      if (isLivePreviewHost() && (port === '3000' || port === '5500' || port === '5173')) {
+        return false
+      }
+      return true
+    } catch {
+      return false
+    }
   }
 
   function proxyOriginsToTry() {
     const list = []
-    const apiBase = configApiBase()
-    if (apiBase) list.push(apiBase)
-    if (typeof location !== 'undefined' && location.origin && location.protocol.startsWith('http')) {
-      list.push(location.origin)
+    const pub = String(configDefaults().publicSiteUrl || configDefaults().apiBase || PUBLIC_DEV_API)
+      .trim()
+      .replace(/\/$/, '')
+    if (isLivePreviewHost() || isGitHubPages()) {
+      if (isPaymentApiOrigin(pub)) list.push(pub)
     }
-    if (isLocalDev()) {
-      list.push(LOCAL_PROXY_ORIGIN)
-    }
-    const raw = getProxyUrl()
-    if (raw.startsWith('http')) {
-      try {
-        list.push(new URL(raw).origin)
-      } catch {
-        /* ignore */
-      }
-    }
+    const stored = String(localStorage.getItem(API_BASE_KEY) || '')
+      .trim()
+      .replace(/\/$/, '')
+    if (isPaymentApiOrigin(stored)) list.push(stored)
+    const origin = paymentApiOrigin()
+    if (isPaymentApiOrigin(origin)) list.push(origin)
+    if (!isLivePreviewHost() && !isVercelHost()) list.push(LOCAL_DEV_API)
+    if (isLocalDev() && isPaymentApiOrigin(location?.origin)) list.push(location.origin)
     return [...new Set(list.filter(Boolean))]
   }
 
-  function proxyBase() {
-    return activeProxyOrigin || configApiBase() || LOCAL_PROXY_ORIGIN
+  function isBakongBlockedResponse(json) {
+    if (!json || typeof json !== 'object') return true
+    if (isBakongPaid(json)) return false
+    const msg = String(json.responseMessage || json.error || '')
+    return /invalid bakong|invalid api response|blocked cloud|HTTP 403|non-JSON|empty api|cannot reach bakong|relay bad/i.test(
+      msg,
+    )
   }
 
+  function hasPaymentApi() {
+    return paymentCheckUrls().length > 0
+  }
+
+  function paymentCheckUrls() {
+    const urls = []
+    for (const origin of proxyOriginsToTry()) {
+      urls.push(`${origin.replace(/\/$/, '')}${API_CHECK_MD5}`)
+    }
+    if (useRelativePaymentApi() && isLocalDev() && !isLivePreviewHost()) {
+      urls.unshift(API_CHECK_MD5)
+    }
+    if (!isLivePreviewHost() && !urls.some((u) => u.includes('127.0.0.1:8787'))) {
+      urls.push(`${LOCAL_DEV_API}${API_CHECK_MD5}`)
+    }
+    const cfg = configDefaults()
+    if (cfg.paymentCheckUrl && !urls.includes(cfg.paymentCheckUrl)) {
+      urls.push(cfg.paymentCheckUrl)
+    }
+    return [...new Set(urls.filter(Boolean))]
+  }
+
+  function proxyBase() {
+    return activeProxyOrigin || paymentApiOrigin() || (typeof location !== 'undefined' ? location.origin : '')
+  }
+
+  /**
+   * Payment check — always same host as the page (never hardcoded 127.0.0.1).
+   * Local: same-origin /api/check-md5 (npm start)
+   * Vercel: https://dyna-store36.vercel.app/api/check-md5
+   * GitHub Pages: https://dyna-store36.vercel.app/api/check-md5 (from apiBase)
+   */
   function resolveProxyUrl() {
     if (activeProxyOrigin === 'direct') return ''
-    const base =
-      (activeProxyOrigin && activeProxyOrigin !== 'direct' ? activeProxyOrigin : '') ||
-      configApiBase() ||
-      (isVercelHost() && typeof location !== 'undefined' ? location.origin : '') ||
-      (isLocalDev() && typeof location !== 'undefined' && location.port === '8787'
-        ? location.origin
-        : '') ||
-      proxyBase()
-    if (!base || base === 'direct') return ''
-    return `${base.replace(/\/$/, '')}/api/check-md5`
+    const cfg = configDefaults()
+    if (isGitHubPages() || isLivePreviewHost()) {
+      useRelativeApi = false
+      const origin = paymentApiOrigin()
+      const url = cfg.paymentCheckUrl || `${origin}${API_CHECK_MD5}`
+      return url.startsWith('http') ? url : `${origin}${API_CHECK_MD5}`
+    }
+    useRelativeApi = true
+    return API_CHECK_MD5
   }
 
   function resolveProxyHealth() {
-    return `${proxyBase()}/api/health`
+    const cfg = configDefaults()
+    if (isGitHubPages() || isLivePreviewHost()) {
+      const origin = paymentApiOrigin()
+      const url = cfg.healthUrl || `${origin}${API_HEALTH}`
+      return url.startsWith('http') ? url : `${origin}${API_HEALTH}`
+    }
+    return API_HEALTH
   }
 
   function resolveProxyRenew() {
@@ -652,6 +1068,10 @@
 
   function markProxyOnline(origin, hasJwt) {
     activeProxyOrigin = origin.replace(/\/$/, '')
+    useRelativeApi =
+      useRelativePaymentApi() &&
+      typeof location !== 'undefined' &&
+      activeProxyOrigin === location.origin
     serverHasJwt = Boolean(hasJwt)
     global.DynaServer?.setOnline?.(true, serverHasJwt)
     if (global.DynaServer) global.DynaServer.hasJwt = serverHasJwt
@@ -668,29 +1088,47 @@
       }
     }
 
+    const healthUrls = []
+    if (useRelativePaymentApi() && isLocalDev() && !isLivePreviewHost()) {
+      healthUrls.push(API_HEALTH)
+    }
     for (const origin of proxyOriginsToTry()) {
-      const probe = await probeApiOrigin(origin)
-      if (probe.ok) {
-        markProxyOnline(origin, probe.hasJwt)
+      healthUrls.push(`${origin.replace(/\/$/, '')}${API_HEALTH}`)
+    }
+
+    for (const healthPath of [...new Set(healthUrls)]) {
+      try {
+        const res = await fetch(healthPath, { method: 'GET', mode: 'cors' })
+        if (!res.ok) continue
+        let hasJwt = hasJwtForPayment()
+        try {
+          const h = await res.json()
+          hasJwt = Boolean(h.hasJwt || h.hasToken) || hasJwt
+        } catch {
+          /* ignore */
+        }
+        if (!hasJwt) await warmServerJwt()
+        hasJwt = paymentJwtReady()
+        const origin = healthPath.replace(/\/api\/health$/i, '')
+        markProxyOnline(origin, hasJwt)
+        try {
+          localStorage.setItem(API_BASE_KEY, origin)
+        } catch {
+          /* ignore */
+        }
         return true
+      } catch {
+        /* try next */
       }
     }
 
-    const fallback = configApiBase()
-    if (fallback && hasJwtForPayment()) {
-      markProxyOnline(fallback, true)
+    if (hasJwtForPayment()) {
+      markProxyOnline(paymentApiOrigin() || location.origin, true)
       return true
     }
 
-    if (isVercelHost() && typeof location !== 'undefined' && hasJwtForPayment()) {
-      markProxyOnline(location.origin, true)
-      return true
-    }
-
-    activeProxyOrigin = configApiBase() || LOCAL_PROXY_ORIGIN
-    const hasJwt = hasJwtForPayment()
-    global.DynaServer?.setOnline?.(false, hasJwt)
-    if (global.DynaServer) global.DynaServer.hasJwt = hasJwt
+    global.DynaServer?.setOnline?.(false, false)
+    if (global.DynaServer) global.DynaServer.hasJwt = false
     return false
   }
 
@@ -700,28 +1138,9 @@
 
   async function redirectToPaymentServerIfNeeded() {
     if (typeof location === 'undefined') return false
-    if (isGitHubPages() || isVercelHost() || configApiBase()) return true
-    if (location.port === '8787') return true
-    const local = LOCAL_PROXY_ORIGIN
-    let ok = false
-    try {
-      const ctrl = new AbortController()
-      const t = setTimeout(() => ctrl.abort(), 3000)
-      const res = await fetch(`${local}/api/health`, { mode: 'cors', signal: ctrl.signal })
-      clearTimeout(t)
-      ok = res.ok
-    } catch {
+    if (location.protocol === 'file:') {
+      global.showKhqrToast?.(paymentHelpMessage())
       return false
-    }
-    if (!ok) return false
-    const path =
-      location.pathname && location.pathname !== '/'
-        ? location.pathname.replace(/^\//, '')
-        : 'index.html'
-    const target = `${local}/${path}${location.search}${location.hash}`
-    if (location.href !== target) {
-      location.replace(target)
-      return true
     }
     return true
   }
@@ -763,6 +1182,67 @@
     throw new Error(json.responseMessage || 'RENEW_FAILED')
   }
 
+  /** Ask Vercel/local server to obtain JWT (env token or renew). */
+  async function warmServerJwt() {
+    applyConfigCredentials()
+    if (paymentJwtReady()) return true
+    const email = getBakongEmail() || configDefaults().email
+    if (!email) return hasJwtForPayment()
+
+    try {
+      const warmRes = await fetch(`${paymentApiOrigin() || ''}/api/warm-jwt`, {
+        method: 'GET',
+        mode: 'cors',
+      })
+      if (warmRes.ok) {
+        const warm = await warmRes.json()
+        if (warm.hasJwt) {
+          serverHasJwt = true
+          markProxyOnline(paymentApiOrigin() || location.origin, true)
+          return true
+        }
+      }
+    } catch {
+      /* fall through */
+    }
+
+    const ok = await syncEmailToServer(true)
+    if (ok) return true
+
+    try {
+      const cfg = configDefaults()
+      const body = {
+        email: email || cfg.email,
+        organization: cfg.organization || 'Dyna Store',
+        project: cfg.project || 'dyna_store',
+        forceRenew: true,
+      }
+      const rbk = getRegisterCode()
+      if (rbk) body.token = rbk
+      const res = await fetch(resolveProxyRenew(), {
+        method: 'POST',
+        mode: 'cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const json = await res.json()
+      const jwt = json.data?.token || json.token
+      if (jwt?.startsWith('eyJ')) {
+        localStorage.setItem(TOKEN_KEY, jwt)
+        const tokenEl = document.getElementById('bakongToken')
+        if (tokenEl) tokenEl.value = jwt
+        serverHasJwt = true
+        markProxyOnline(paymentApiOrigin() || location.origin, true)
+        return true
+      }
+    } catch (e) {
+      console.warn('warmServerJwt', e)
+    }
+
+    await discoverProxy()
+    return serverHasJwt || hasJwtForPayment()
+  }
+
   async function syncEmailToServer(force = false) {
     const email = getBakongEmail()
     if (!email) return false
@@ -784,17 +1264,22 @@
           organization: cfg.organization || 'Dyna Store',
           project: cfg.project || 'dyna_store',
           forceRenew: Boolean(force),
+          token: getRegisterCode() || undefined,
         }),
       })
       const json = await res.json()
-      serverHasJwt = Boolean(json.hasJwt)
+      serverHasJwt = Boolean(json.hasJwt || json.hasToken)
       if (json.token?.startsWith('eyJ')) {
         localStorage.setItem(TOKEN_KEY, json.token)
         const tokenEl = document.getElementById('bakongToken')
         if (tokenEl) tokenEl.value = json.token
+        serverHasJwt = true
       }
       lastEmailSyncAt = Date.now()
-      return json.hasJwt
+      if (serverHasJwt) {
+        markProxyOnline(paymentApiOrigin() || location.origin, true)
+      }
+      return serverHasJwt
     } catch {
       return false
     }
@@ -836,15 +1321,7 @@
       if (jwt) localStorage.setItem(TOKEN_KEY, jwt)
     }
     if (proxyEl) {
-      let stored = localStorage.getItem(PROXY_KEY) || ''
-      if (stored === '/api/check-md5' || stored.endsWith('/check-md5')) {
-        stored = PROXY_API
-        localStorage.setItem(PROXY_KEY, stored)
-      }
-      proxyEl.value = stored || cfg.proxy || PROXY_API
-      if (!localStorage.getItem(PROXY_KEY)) {
-        localStorage.setItem(PROXY_KEY, proxyEl.value)
-      }
+      proxyEl.value = resolveProxyUrl() || API_CHECK_MD5
     }
     if (accountEl) {
       accountEl.value =
@@ -885,14 +1362,25 @@
 
   /** Map Bakong check_transaction_by_md5 response to status */
   function parsePaymentStatus(json) {
-    if (!json || typeof json !== 'object') return 'error'
+    if (!json || typeof json !== 'object') return 'pending'
 
     if (json._dyna?.paid === true) return 'paid'
 
+    const msg = String(json.responseMessage || '')
+    if (/invalid bakong response|invalid api response/i.test(msg)) {
+      return json.errorCode === 6 ? 'unauthorized' : 'pending'
+    }
+    if (/HTTP 403|blocked cloud|BAKONG_RELAY/i.test(msg)) {
+      return 'unauthorized'
+    }
+
     if (json.errorCode === 6) return 'unauthorized'
     if (json.errorCode === 99) return 'no_token'
-    if (json.errorCode === 2 || json.errorCode === 3) return 'failed'
-    if (json.errorCode === 1 && json.responseCode !== 0) return 'pending'
+    if (json.errorCode === 1) return 'pending'
+    if (json.errorCode === 2 || json.errorCode === 3) {
+      if (/fail|reject|cancel|declin/i.test(msg)) return 'failed'
+      return 'pending'
+    }
 
     const d = json.data
     if (Array.isArray(d)) {
@@ -904,9 +1392,10 @@
         ? d.transaction
         : d
 
-    if (json.responseCode === 0) {
+    if (json.responseCode === 0 && json.data != null) {
       if (Array.isArray(tx) && tx.some(transactionLooksPaid)) return 'paid'
       if (transactionLooksPaid(tx)) return 'paid'
+      if (tx && typeof tx === 'object' && (tx.hash || tx.fromAccountId)) return 'paid'
       if (!tx || typeof tx !== 'object') {
         if (/success|completed|paid/i.test(String(json.responseMessage || ''))) return 'paid'
         return 'pending'
@@ -926,6 +1415,7 @@
   let pollTimer = null
   let pollStartedAt = 0
   let checking = false
+  let lastPaymentCheckAt = 0
   let paymentCredited = false
   let serverHasJwt = false
   let lastEmailSyncAt = 0
@@ -941,7 +1431,7 @@
       s.includes('register') ||
       s.includes('renew_token') ||
       s.includes('proxy') ||
-      s.includes('start.bat') ||
+      s.includes('npm start') ||
       s.includes('server.mjs') ||
       s.includes('start server') ||
       s.includes('offline') ||
@@ -950,6 +1440,62 @@
       return null
     }
     return msg
+  }
+
+  function formatCheckHint(json, err) {
+    if (err) {
+      const m = String(err.message || err)
+      if (m.startsWith('PROXY_HTTP_')) {
+        return `Payment API error (HTTP ${m.replace('PROXY_HTTP_', '')}) — check .env / Vercel env`
+      }
+      if (m === 'PROXY_BAD_RESPONSE') {
+        return 'Payment API returned invalid data — run npm start or redeploy Vercel api/'
+      }
+      if (m === 'PROXY_OFFLINE') {
+        return isVercelHost()
+          ? 'Payment API offline — check /api/health on your Vercel URL'
+          : 'Run npm start in the project folder, then open the URL it prints'
+      }
+      return userFacingMessage(m) || m
+    }
+    const msg = String(json?.responseMessage || json?.error || '').trim()
+    if (/Server JWT missing/i.test(msg)) {
+      return 'Set BAKONG_TOKEN in .env (eyJ…) or Vercel Environment Variables'
+    }
+    if (/not found/i.test(msg)) {
+      return 'Bakong: payment not found yet — wait ~30s after paying, tap Check payment now'
+    }
+    if (/403|blocked|RELAY|cloud|invalid bakong/i.test(msg)) {
+      return isVercelHost()
+        ? 'Hosted: add BAKONG_TOKEN on Vercel + redeploy. If still fails, set BAKONG_RELAY_URL (ngrok → npm start)'
+        : 'Bakong blocked — run npm start at http://127.0.0.1:8787'
+    }
+    return userFacingMessage(msg) || msg || null
+  }
+
+  async function readProxyJson(res) {
+    const text = await res.text()
+    if (!text.trim()) {
+      return {
+        responseCode: 1,
+        errorCode: res.ok ? 1 : 99,
+        responseMessage: res.ok ? 'Empty API response' : `HTTP ${res.status}`,
+        data: null,
+      }
+    }
+    try {
+      return JSON.parse(text)
+    } catch {
+      const preview = text.replace(/\s+/g, ' ').slice(0, 120)
+      return {
+        responseCode: 1,
+        errorCode: /403|forbidden/i.test(preview) ? 6 : 1,
+        responseMessage: res.ok
+          ? `Invalid API response: ${preview}`
+          : `HTTP ${res.status}: ${preview}`,
+        data: null,
+      }
+    }
   }
 
   function setPaymentStatus(status, detail) {
@@ -972,77 +1518,20 @@
 
   function updateMd5Display() {
     const el = document.getElementById('khqrMd5')
-    if (el) el.textContent = currentMd5 || '—'
+    if (!el) return
+    el.textContent = currentMd5 || '—'
+    el.title = currentMd5 ? `MD5: ${currentMd5}` : ''
+    el.dataset.fullMd5 = currentMd5 || ''
   }
 
   async function checkTransactionByMd5(md5Hash) {
-    applyConfigCredentials()
-    let token = getApiCredential()
     const md5 = String(md5Hash || '').toLowerCase()
-
-    if (!token.startsWith('eyJ') && getRegisterCode()) {
-      token = await renewJwtDirect()
-    }
-
-    const proxy = resolveProxyUrl()
-    if (proxy) {
-      const res = await fetch(proxy, {
-        method: 'POST',
-        mode: 'cors',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ md5, token: token.startsWith('eyJ') ? token : undefined }),
-      })
-      let json
-      try {
-        json = await res.json()
-      } catch {
-        if (!res.ok) throw new Error('PROXY_HTTP_' + res.status)
-        throw new Error('PROXY_BAD_RESPONSE')
-      }
-      if (json.error && json.responseCode === undefined) {
-        if (res.status === 401) throw new Error('NO_TOKEN')
-        return {
-          responseCode: 1,
-          errorCode: 99,
-          responseMessage: String(json.error),
-          data: null,
-        }
-      }
-      if (json.errorCode === 6 && token.startsWith('eyJ')) {
-        const renewed = await renewJwtDirect()
-        if (renewed) {
-          const retry = await fetch(proxy, {
-            method: 'POST',
-            mode: 'cors',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ md5, token: renewed }),
-          })
-          json = await retry.json()
-        }
-      }
-      const paid = parsePaymentStatus(json) === 'paid'
-      return { ...json, _dyna: { paid, md5, hasJwt: hasJwtForPayment(), proxy: true } }
-    }
-
-    if (isBrowser()) {
-      throw new Error('PROXY_OFFLINE')
-    }
-
-    if (!token.startsWith('eyJ')) throw new Error('NO_TOKEN')
-
-    const res = await fetch(`${PAYMENT_CHECK.apiBase}/v1/check_transaction_by_md5`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ md5 }),
+    const hist = getPaymentHistory().find((x) => x.md5 === md5)
+    return requestPaymentCheck({
+      md5,
+      qr: hist?.qr || currentPayload || '',
+      usd: Number(currentUsd) || usdForMd5(md5),
     })
-
-    const json = await res.json()
-    if (json.errorCode === 6) throw new Error('UNAUTHORIZED')
-    if (res.status === 401) throw new Error('UNAUTHORIZED')
-    return json
   }
 
   function stopPolling() {
@@ -1071,7 +1560,7 @@
   async function ensurePaymentWatcher() {
     applyConfigCredentials()
     await discoverProxy()
-    if (resolveProxyUrl()) return true
+    if (hasPaymentApi()) return true
     if (isStaticHosting()) {
       if (getRegisterCode()) await renewJwtDirect()
       return hasJwtForPayment()
@@ -1080,76 +1569,113 @@
       await syncEmailToServer(true)
       await discoverProxy()
     }
-    return Boolean(resolveProxyUrl()) || serverHasJwt || hasJwtForPayment()
+    return hasPaymentApi() || serverHasJwt || hasJwtForPayment()
   }
 
   async function runPaymentCheck() {
-    if (!currentMd5 || checking) return
+    const now = Date.now()
+    if (checking && now - lastPaymentCheckAt < 6000) return
     checking = true
+    lastPaymentCheckAt = now
     setPaymentStatus('checking', 'Checking payment — balance updates automatically…')
 
     try {
       await discoverProxy()
-      if (!resolveProxyUrl()) {
+      await warmServerJwt()
+
+      if (await scanAllPendingPayments()) {
+        setPaymentStatus('paid', 'Payment received — balance updated')
+        stopPolling()
+        setTimeout(() => closeKhqrModal(), 1500)
+        return
+      }
+
+      if (!currentMd5) {
+        setPaymentStatus('pending', 'Open Top Up and pay with the QR shown')
+        return
+      }
+      if (!hasPaymentApi()) {
         await ensurePaymentWatcher()
       }
-      if (!resolveProxyUrl() && isBrowser()) {
+      if (!hasPaymentApi() && isBrowser()) {
         setPaymentStatus(
           'pending',
           isGitHubPages()
             ? 'Paste your Vercel URL in the banner above → Save → pay again'
             : isVercelHost()
               ? 'Add BAKONG_TOKEN in Vercel → Settings → Environment Variables → redeploy'
-              : 'Run start.bat → open http://127.0.0.1:8787/index.html',
+              : 'Run npm start, then open http://127.0.0.1:8787',
         )
         return
       }
 
       const hist = getPaymentHistory().find((x) => x.md5 === currentMd5)
       const qr = hist?.qr || currentPayload || ''
-      let json = null
-      let status = 'pending'
-      let matchedMd5 = currentMd5
+      const creditUsd = Number(currentUsd) || usdForMd5(currentMd5)
 
-      for (const candidate of md5Variants(currentMd5, qr)) {
-        json = await checkTransactionByMd5(candidate)
-        status = parsePaymentStatus(json)
-        matchedMd5 = candidate
-        if (status === 'paid') break
-        if (status === 'no_token' || status === 'unauthorized') break
-      }
+      let json = await requestPaymentCheck({
+        md5: currentMd5,
+        qr,
+        usd: creditUsd,
+        amount: creditUsd,
+      })
+      let status = isBakongPaid(json) ? 'paid' : parsePaymentStatus(json)
+      let matchedMd5 = json?._dyna?.md5 || currentMd5
 
       if (status === 'no_token' || status === 'unauthorized') {
+        await warmServerJwt()
         await renewJwtDirect()
-        for (const candidate of md5Variants(currentMd5, qr)) {
-          json = await checkTransactionByMd5(candidate)
-          status = parsePaymentStatus(json)
-          matchedMd5 = candidate
-          if (status === 'paid') break
-        }
+        json = await requestPaymentCheck({ md5: currentMd5, qr, usd: creditUsd })
+        status = isBakongPaid(json) ? 'paid' : parsePaymentStatus(json)
+        matchedMd5 = json?._dyna?.md5 || currentMd5
       }
 
-      if (status === 'paid') {
-        applyTopupCredit(currentUsd, matchedMd5, json?.data)
+      if (isBakongPaid(json)) {
+        applyTopupCredit(usdFromBakongData(json, creditUsd), matchedMd5, json?.data)
         setPaymentStatus('paid', 'Payment received — balance updated')
         stopPolling()
         setTimeout(() => closeKhqrModal(), 1500)
         return
       }
       if (status === 'no_token' || status === 'unauthorized') {
+        const hint = String(json?.responseMessage || '')
         setPaymentStatus(
           'pending',
-          'Paid already? Run start.bat, then tap “Check payment now” or “Confirm payment”',
+          /403|RELAY|cloud/i.test(hint)
+            ? hint
+            : isVercelHost()
+              ? 'Paid? Tap Check payment now — add BAKONG_TOKEN on Vercel if this repeats'
+              : 'Paid? Tap Check payment now — keep npm start running',
         )
         document.getElementById('khqrAdvanced')?.classList.remove('hidden')
         return
       }
       if (status === 'failed') {
-        setPaymentStatus('failed')
+        const failMsg = formatCheckHint(json, null)
+        setPaymentStatus('failed', failMsg || 'Payment was declined or cancelled')
         stopPolling()
         return
       }
-      setPaymentStatus('pending')
+      if (status === 'error') {
+        setPaymentStatus('pending', formatCheckHint(json, null) || 'Tap Check payment now to retry')
+        return
+      }
+      const bakongMsg = String(json?.responseMessage || '').trim()
+      const notFound = /not found|no transaction|does not exist/i.test(bakongMsg)
+      if (notFound) {
+        const elapsed = Math.round((Date.now() - pollStartedAt) / 1000)
+        setPaymentStatus(
+          'pending',
+          elapsed < 120
+            ? `Bakong: still syncing… (${elapsed}s) — keep this open after you paid`
+            : 'Paid but not found? Generate a new QR, pay again, or paste MD5 below',
+        )
+      } else if (bakongMsg) {
+        setPaymentStatus('checking', bakongMsg)
+      } else {
+        setPaymentStatus('pending', 'Waiting for payment… (auto-checking every 1s)')
+      }
+      saveLastCheck(matchedMd5, status, bakongMsg)
     } catch (err) {
       if (err.message === 'NO_TOKEN') {
         setPaymentStatus('pending', 'Waiting for payment…')
@@ -1163,10 +1689,10 @@
         setPaymentStatus(
           'pending',
           isGitHubPages()
-            ? 'Link Vercel API URL in banner above, or run start.bat + http://127.0.0.1:8787'
+            ? 'Link Vercel API URL in banner above, or run npm start locally'
             : isVercelHost()
               ? 'Vercel API missing — check /api/health and BAKONG_TOKEN env'
-              : 'Run start.bat (keep window open) then refresh',
+              : 'Run npm start (keep window open) then refresh',
         )
         return
       }
@@ -1179,11 +1705,15 @@
               : 'GitHub Pages: paste Vercel URL in banner → Save → Retry'
             : isVercelHost()
               ? 'Vercel API unreachable — redeploy with api/ folder + env vars'
-              : 'Waiting for payment… (run start.bat if testing locally)',
+              : 'Waiting for payment… (run npm start if testing locally)',
         )
         return
       }
-      setPaymentStatus('error', userFacingMessage(err.message) || 'Payment check failed')
+      const hint = formatCheckHint(null, err)
+      setPaymentStatus(
+        'pending',
+        hint || 'Could not verify yet — tap Check payment now (keep polling)',
+      )
     } finally {
       checking = false
     }
@@ -1210,7 +1740,7 @@
         return
       }
       runPaymentCheck()
-    }, PAYMENT_CHECK.pollIntervalMs)
+    }, 1000)
   }
 
   function renderQr(container, payload) {
@@ -1243,23 +1773,32 @@
     }
   }
 
-  function openKhqrModal(usdAmount) {
+  async function openKhqrModal(usdAmount) {
     const overlay = document.getElementById('khqrOverlay')
-    if (!overlay) return
+    if (!overlay) {
+      global.showKhqrToast?.('Payment popup missing — refresh the page')
+      return
+    }
 
     saveSettings()
     loadSettings()
 
     const account = getBakongAccount()
     if (isInvalidAccount(account)) {
-      global.showKhqrToast?.('Enter your real Bakong ID above (e.g. you@aba)')
+      global.showKhqrToast?.('Enter your Bakong ID above (e.g. ben_sothida@bkrt)')
       document.getElementById('bakongAccount')?.focus()
       return
     }
 
+    overlay.classList.add('open')
+    overlay.setAttribute('aria-hidden', 'false')
+    document.body.style.overflow = 'hidden'
+    document.body.classList.add('khqr-open')
+    setPaymentStatus('pending', 'Generating QR…')
+
     try {
       currentUsd = Number(usdAmount)
-      const built = buildKhqr(usdAmount)
+      const built = await buildKhqr(usdAmount)
       currentPayload = built.qr
       currentMd5 = String(built.md5 || '').toLowerCase()
       if (!/^[a-f0-9]{32}$/.test(currentMd5)) {
@@ -1267,7 +1806,13 @@
         return
       }
     } catch (err) {
-      global.showKhqrToast?.('Cannot build KHQR — check Bakong account')
+      console.error('buildKhqr', err)
+      closeKhqrModal()
+      global.showKhqrToast?.(
+        err?.message === 'INVALID_ACCOUNT'
+          ? 'Enter your Bakong ID above (e.g. ben_sothida@bkrt)'
+          : 'Cannot build QR — run npm start and open http://127.0.0.1:8787',
+      )
       return
     }
 
@@ -1288,17 +1833,16 @@
     updateMd5Display()
     savePendingTopup()
 
-    overlay.classList.add('open')
-    overlay.setAttribute('aria-hidden', 'false')
-    document.body.style.overflow = 'hidden'
-    document.body.classList.add('khqr-open')
-
     renderQr(document.getElementById('khqrQr'), currentPayload)
 
     paymentCredited = false
     document.getElementById('khqrAdvanced')?.classList.toggle('hidden', serverHasJwt || Boolean(getToken()))
     setPaymentStatus('pending', 'Scan & pay — balance updates automatically')
-    ensurePaymentReady().finally(() => startPolling())
+    ensurePaymentReady().finally(() => {
+      startPolling()
+      void autoBalanceFromPending()
+      void syncWalletAfterTopup()
+    })
   }
 
   async function ensurePaymentReady() {
@@ -1315,10 +1859,9 @@
 
     const online = await discoverProxy()
     if (online && !serverHasJwt) {
-      await syncEmailToServer(true)
-      await discoverProxy()
+      await warmServerJwt()
     }
-    return online || getToken().startsWith('eyJ')
+    return online && (serverHasJwt || getToken().startsWith('eyJ'))
   }
 
   async function tryAutoRenewToken() {
@@ -1326,13 +1869,28 @@
   }
 
   async function confirmPayment() {
+    setPaymentStatus('checking', 'Verifying your payment with Bakong…')
+    await warmServerJwt()
+    await discoverProxy()
+    if (await scanAllPendingPayments()) {
+      setPaymentStatus('paid', 'Payment received — balance updated')
+      stopPolling()
+      setTimeout(() => closeKhqrModal(), 1500)
+      return
+    }
     if (!currentUsd || !currentMd5) return
     await runPaymentCheck()
     if (paymentCredited) return
     global.showKhqrToast?.(
-      'Payment not confirmed yet. Keep start.bat running, wait ~30s, then tap Check payment now again.',
+      isVercelHost()
+        ? 'Not confirmed yet — wait ~30s after paying, tap Check payment now again'
+        : 'Not confirmed yet — keep npm start open, wait ~30s, tap Check payment now',
     )
-    setPaymentStatus('pending', 'Still waiting for Bakong to confirm your payment…')
+    setPaymentStatus(
+      'pending',
+      formatCheckHint(null, null) ||
+        'Still waiting for Bakong — tap Check payment now in ~30 seconds',
+    )
   }
 
   async function fixBakongToken() {
@@ -1465,6 +2023,10 @@
     })
   }
 
+  function serverStatusHtml(strong, extra) {
+    return `<strong>${strong}</strong>${extra || ''} <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>`
+  }
+
   global.DynaServer = {
     online: false,
     hasJwt: false,
@@ -1476,14 +2038,21 @@
       const apiBase = configApiBase()
       const hosted = isStaticHosting()
 
-      const hideBanner = this.online && this.hasJwt && (resolveProxyUrl() || !isGitHubPages())
+      const jwtReady = paymentJwtReady()
+      const canCheck = hasPaymentApi() && (this.online || jwtReady)
+      const hideBanner = jwtReady && canCheck
       el.classList.toggle('hidden', hideBanner)
-      el.classList.toggle('server-status--offline', !this.online || !this.hasJwt)
-      el.classList.toggle('server-status--ok', this.online && this.hasJwt)
+      el.classList.toggle('server-status--offline', !this.online || !jwtReady)
+      el.classList.toggle('server-status--ok', this.online && jwtReady)
 
-      if (this.online && this.hasJwt) {
+      if (this.online && jwtReady) {
+        const where = isGitHubPages()
+          ? configApiBase()
+          : typeof location !== 'undefined'
+            ? location.origin + '/api/check-md5'
+            : '/api/check-md5'
         el.innerHTML =
-          '<strong>Payment check ready.</strong> Scan QR — balance updates automatically after you pay.'
+          `<strong>Payment check ready.</strong> API: <code>${where}</code> — balance updates after you pay.`
         return
       }
 
@@ -1493,27 +2062,36 @@
             '<strong>Payment check ready.</strong> Scan QR — balance updates after you pay.'
         } else if (!apiBase) {
           el.innerHTML =
-            '<div class="server-setup"><strong>GitHub Pages cannot check Bakong alone</strong><p>Option A: run <code>start.bat</code> → open <code>http://127.0.0.1:8787</code></p><p>Option B: deploy to <a href="https://vercel.com" target="_blank" rel="noopener">Vercel</a> and paste URL:</p><input type="url" id="apiBaseInput" class="server-setup-input" placeholder="https://your-app.vercel.app" /><button type="button" class="server-retry-btn" id="serverSaveApi">Save</button> <button type="button" class="server-retry-btn" id="serverRetry">Retry</button></div>'
+            '<div class="server-setup"><strong>GitHub Pages cannot check Bakong alone</strong><p>Option A: run <code>npm start</code> locally</p><p>Option B: deploy to <a href="https://vercel.com" target="_blank" rel="noopener">Vercel</a> and paste URL:</p><input type="url" id="apiBaseInput" class="server-setup-input" placeholder="https://your-app.vercel.app" /><button type="button" class="server-retry-btn" id="serverSaveApi">Save</button> <button type="button" class="server-retry-btn" id="serverRetry">Retry</button></div>'
         } else if (!this.online) {
           el.innerHTML =
-            '<strong>Payment server not reachable.</strong> Check URL or run <code>start.bat</code>. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>'
+            '<strong>Payment server not reachable.</strong> Check URL or run <code>npm start</code>. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>'
         } else {
           el.innerHTML =
-            '<strong>API online but no JWT.</strong> Run <code>node scripts/bakong-token.mjs your@email.com</code> <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>'
+            isVercelHost()
+              ? '<strong>API online but no JWT.</strong> In Vercel → Settings → Environment Variables add all three: <code>BAKONG_TOKEN</code>, <code>BAKONG_EMAIL</code>, <code>BAKONG_REGISTER_TOKEN</code> → Save → Redeploy. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>'
+              : '<strong>API online but no JWT.</strong> Copy <code>.env.example</code> to <code>.env</code>, fill <code>BAKONG_TOKEN</code> + email, restart <code>npm start</code>. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>'
         }
         return
       }
 
-      if (this.online) {
+      if (!this.online) {
         el.innerHTML =
-          '<strong>Server on, API token missing.</strong> Run <code>node scripts/bakong-token.mjs your@email.com</code> then restart <code>start.bat</code>.'
+          '<strong>Payment server offline.</strong> Run <code>npm start</code> and keep the window open. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>'
+        return
       }
+      el.innerHTML =
+        '<strong>API online but no JWT.</strong> Fix <code>.env</code>: <code>BAKONG_TOKEN</code>=<code>eyJ...</code> and <code>BAKONG_REGISTER_TOKEN</code>=<code>rbk...</code> (do not swap). Restart <code>npm start</code>. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>'
     },
     async ping() {
       try {
+        applyConfigCredentials()
+        await warmServerJwt()
         const ok = await discoverProxy()
-        this.setOnline(ok, serverHasJwt)
-        return ok && serverHasJwt
+        const ready = paymentJwtReady()
+        this.setOnline(ok || ready, ready)
+        if (ready) global.DYNA_PAYMENT_API_READY = true
+        return ready
       } catch {
         this.setOnline(false, false)
         return false
@@ -1521,14 +2099,61 @@
     },
   }
 
+  async function autoBalanceFromPending() {
+    applyConfigCredentials()
+    const hasPending =
+      Boolean(localStorage.getItem(PENDING_KEY)) || getPaymentHistory().length > 0
+    if (!hasPending) return false
+    await warmServerJwt()
+    if (!paymentJwtReady()) {
+      try {
+        await renewJwtDirect()
+      } catch {
+        /* ignore */
+      }
+    }
+    if (!hasPaymentApi() && !global.DynaPaymentApiBase?.resolve?.()) return false
+
+    const ok = await resumePendingTopup()
+    if (ok || paymentCredited) return true
+
+    for (const item of getPaymentHistory().slice().reverse()) {
+      if (creditedMd5.has(item.md5)) continue
+      const credited = await checkMd5AndCredit(item.md5, item.usd)
+      if (credited) return true
+    }
+
+    if (currentMd5 && !paymentCredited) {
+      await runPaymentCheck()
+    }
+    return paymentCredited
+  }
+
   async function bootstrapPaymentWatcher() {
     applyConfigCredentials()
+    await warmServerJwt()
     await discoverProxy()
+    global.DynaServer?.ping?.()
     updatePendingBanner(Boolean(localStorage.getItem(PENDING_KEY)))
-    await resumePendingTopup()
+    await autoBalanceFromPending()
     if (!global.__dynaPaymentInterval) {
-      global.__dynaPaymentInterval = setInterval(() => resumePendingTopup(), 1500)
+      global.__dynaPaymentInterval = setInterval(() => void autoBalanceFromPending(), 800)
     }
+    if (!global.__dynaVisibilitySync) {
+      global.__dynaVisibilitySync = true
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          void autoBalanceFromPending()
+          if (currentMd5 && !paymentCredited) void runPaymentCheck()
+        }
+      })
+    }
+  }
+
+  async function syncWalletAfterTopup() {
+    applyConfigCredentials()
+    await warmServerJwt()
+    return (await scanAllPendingPayments()) || (await autoBalanceFromPending())
   }
 
   global.Khqr = {
@@ -1537,6 +2162,7 @@
     isInvalidAccount,
     isProxyOnline,
     discoverProxy,
+    warmServerJwt,
     redirectToPaymentServerIfNeeded,
     checkServerOnline: isProxyOnline,
     hashMd5,
@@ -1550,12 +2176,18 @@
     applyTopupCredit,
     resumePendingTopup,
     checkMd5AndCredit,
+    checkByBakongHash,
+    scanAllPendingPayments,
     checkAllPaymentHistory,
     addPaymentHistory,
     getPaymentHistory,
     usdForMd5,
     bootstrapPaymentWatcher,
+    autoBalanceFromPending,
+    syncWalletAfterTopup,
     checkPaymentNow: () => runPaymentCheck(),
+    buildKhqrLocal,
+    hasPaymentApi,
     creditWalletAfterPaid,
     parsePaymentStatus,
     openKhqrModal,
@@ -1563,6 +2195,9 @@
     initKhqrModal,
     loadSettings,
     applyConfigCredentials,
+    configDefaults,
+    paymentHelpMessage,
+    configuredSiteUrl,
     hasJwtForPayment,
     saveSettings,
     formatKhr,

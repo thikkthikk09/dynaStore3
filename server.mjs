@@ -6,9 +6,26 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { createGameUploadApi, MAX_GAME_BYTES } from './server/game-uploads.mjs'
+import { ensureServerJwtAvailable, normalizeJwt } from './api/bakong-lib.mjs'
+import { handlePaymentVerify } from './api/payment-handler.mjs'
+import { generateKhqrIndividual } from './api/khqr-generate.mjs'
+import { loadDotenv } from './scripts/load-dotenv.mjs'
+import { fixSwappedBakongEnv, validateBakongEnv } from './scripts/fix-bakong-env.mjs'
+import { runtimeConfigJs } from './api/runtime-config.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = __dirname
+loadDotenv(ROOT)
+if (fixSwappedBakongEnv()) {
+  console.log('  Note: auto-fixed swapped BAKONG_TOKEN / BAKONG_REGISTER_TOKEN in .env')
+}
+const envErrors = validateBakongEnv()
+if (envErrors.length) {
+  console.log('')
+  envErrors.forEach((e) => console.log('  !', e))
+  console.log('  Copy .env.example → .env and fix values, then restart.')
+  console.log('')
+}
 const PORT = Number(process.env.PORT) || 8787
 const HOST = process.env.HOST || (process.env.PORT ? '0.0.0.0' : '127.0.0.1')
 const RUNTIME_FILE = path.join(ROOT, 'standalone', '.bakong-runtime.json')
@@ -42,11 +59,12 @@ function loadConfig() {
     return m?.[1]?.trim() || ''
   }
   return {
-    token: pick('token'),
-    registerToken: pick('registerToken'),
+    token: pick('token') || process.env.BAKONG_TOKEN || '',
+    registerToken: pick('registerToken') || process.env.BAKONG_REGISTER_TOKEN || '',
     email: pick('email') || process.env.BAKONG_EMAIL || '',
-    organization: pick('organization') || 'Dyna Store',
-    project: pick('project') || 'dyna_store',
+    account: pick('account') || process.env.BAKONG_ACCOUNT || '',
+    organization: pick('organization') || process.env.BAKONG_ORG || 'Dyna Store',
+    project: pick('project') || process.env.BAKONG_PROJECT || 'dyna_store',
   }
 }
 
@@ -93,26 +111,6 @@ let serverJwt = pickJwt(bootCfg.token, runtime.jwt, process.env.BAKONG_TOKEN)
 let runtimeEmail = runtime.email || bootCfg.email || ''
 if (serverJwt.startsWith('eyJ')) {
   saveRuntime({ email: runtimeEmail || bootCfg.email, jwt: serverJwt })
-}
-
-function transactionPaid(data) {
-  const tx = data?.data
-  if (!tx || typeof tx !== 'object') return false
-  const st = String(tx.status || tx.transactionStatus || '').toUpperCase()
-  return (
-    st === 'SUCCESS' ||
-    st === 'PAID' ||
-    st === 'COMPLETED' ||
-    st === 'SUCCEEDED' ||
-    st === 'ACCEPTED' ||
-    st === 'SETTLED' ||
-    Boolean(tx.hash) ||
-    Boolean(tx.fromAccountId) ||
-    Boolean(tx.toAccountId) ||
-    Number(tx.acknowledgedDateMs) > 0 ||
-    Number(tx.createdDateMs) > 0 ||
-    (tx.amount != null && Number(tx.amount) > 0)
-  )
 }
 
 function activeEmail() {
@@ -230,6 +228,25 @@ async function handleSetEmail(res, body) {
   }
 }
 
+function expressStyleRes(nodeRes) {
+  return {
+    setHeader(name, value) {
+      nodeRes.setHeader(name, value)
+    },
+    status(code) {
+      this.statusCode = code
+      return this
+    },
+    json(data) {
+      sendJson(nodeRes, this.statusCode || 200, data)
+    },
+    end(chunk) {
+      if (chunk !== undefined) nodeRes.end(chunk)
+      else nodeRes.end()
+    },
+  }
+}
+
 async function handleCheckMd5(req, res, body) {
   let json
   try {
@@ -238,60 +255,18 @@ async function handleCheckMd5(req, res, body) {
     return sendJson(res, 400, { error: 'Invalid JSON' })
   }
 
-  const md5 = String(json.md5 || '')
-    .trim()
-    .toLowerCase()
-  if (!md5 || !/^[a-f0-9]{32}$/.test(md5)) {
-    return sendJson(res, 400, { error: 'md5 must be 32 hex characters' })
+  const clientToken = normalizeJwt(json.token || json.bearer)
+  if (clientToken.startsWith('eyJ') && clientToken !== serverJwt) {
+    serverJwt = clientToken
+    saveRuntime({ email: activeEmail(), jwt: serverJwt })
+  } else {
+    const fresh = await ensureServerJwtAvailable(clientToken)
+    if (fresh.startsWith('eyJ')) serverJwt = fresh
   }
 
-  const clientToken = pickJwt(json.token, json.bearer)
-  let token = pickJwt(clientToken, await ensureServerJwt())
-  if (!token.startsWith('eyJ')) {
-    return sendJson(res, 200, {
-      responseCode: 1,
-      responseMessage: 'Server JWT missing — run: node scripts/bakong-token.mjs your@email.com',
-      errorCode: 99,
-      data: null,
-      _dyna: { paid: false, md5, hasJwt: false },
-    })
-  }
-
-  async function callBakong(bearer) {
-    const upstream = await fetch(BAKONG_API, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${bearer}`,
-      },
-      body: JSON.stringify({ md5 }),
-    })
-    const text = await upstream.text()
-    try {
-      return text ? JSON.parse(text) : {}
-    } catch {
-      return { responseCode: 1, errorCode: 1, responseMessage: 'Invalid Bakong response' }
-    }
-  }
-
-  try {
-    let data = await callBakong(token)
-
-    if (data.errorCode === 6) {
-      serverJwt = ''
-      token = await ensureServerJwt(true)
-      if (token.startsWith('eyJ')) data = await callBakong(token)
-    }
-
-    const paid = transactionPaid(data)
-    if (paid) {
-      console.log(`  MD5 paid: ${md5.slice(0, 8)}… amount=${data.data?.amount ?? '?'}`)
-    }
-
-    sendJson(res, 200, { ...data, _dyna: { paid, md5, hasJwt: true } })
-  } catch (err) {
-    sendJson(res, 502, { error: String(err.message) })
-  }
+  const mockReq = { method: 'POST', body: json }
+  const mockRes = expressStyleRes(res)
+  await handlePaymentVerify(mockReq, mockRes)
 }
 
 function serveStatic(req, res) {
@@ -328,15 +303,34 @@ async function handleRequest(req, res) {
     return
   }
 
-  if (req.method === 'GET' && req.url === '/api/health') {
-    const jwt = serverJwt.startsWith('eyJ')
+  if (req.method === 'GET' && req.url === '/api/env-config') {
+    cors(res)
+    res.writeHead(200, {
+      'Content-Type': 'application/javascript; charset=utf-8',
+      'Cache-Control': 'no-store',
+    })
+    res.end(runtimeConfigJs())
+    return
+  }
+
+  if (req.method === 'GET' && (req.url === '/api/health' || req.url === '/api/warm-jwt')) {
+    const jwt = await ensureServerJwtAvailable()
+    if (jwt.startsWith('eyJ') && jwt !== serverJwt) {
+      serverJwt = jwt
+      saveRuntime({ email: activeEmail(), jwt: serverJwt })
+    }
+    const hasJwt = jwt.startsWith('eyJ')
     return sendJson(res, 200, {
-      ok: true,
-      hasToken: jwt,
-      hasJwt: jwt,
-      email: activeEmail() || null,
-      gameUploads: true,
-      maxGameUploadGb: Math.floor(MAX_GAME_BYTES / (1024 ** 3)),
+      ok: hasJwt,
+      hasToken: hasJwt,
+      hasJwt,
+      email: activeEmail() || process.env.BAKONG_EMAIL || null,
+      gameUploads: req.url === '/api/health',
+      maxGameUploadGb:
+        req.url === '/api/health' ? Math.floor(MAX_GAME_BYTES / (1024 ** 3)) : undefined,
+      hint: hasJwt
+        ? null
+        : 'Set BAKONG_TOKEN in .env (or BAKONG_EMAIL + BAKONG_REGISTER_TOKEN)',
     })
   }
 
@@ -347,12 +341,42 @@ async function handleRequest(req, res) {
   })
   if (uploadHandled) return
 
-  if (req.method === 'POST' && (req.url === '/api/set-email' || req.url === '/api/renew-token')) {
+  if (req.method === 'POST' && req.url === '/api/renew-token') {
+    return handleSetEmail(res, await readBody(req))
+  }
+
+  if (req.method === 'POST' && req.url === '/api/set-email') {
     return handleSetEmail(res, await readBody(req))
   }
 
   if (req.method === 'POST' && (req.url === '/api/check-md5' || req.url === '/check-md5')) {
     return handleCheckMd5(req, res, await readBody(req))
+  }
+
+  if (req.method === 'POST' && req.url === '/api/khqr-build') {
+    let json
+    try {
+      json = JSON.parse(await readBody(req))
+    } catch {
+      return sendJson(res, 400, { error: 'Invalid JSON' })
+    }
+    try {
+      const cfg = loadConfig()
+      const usd = Number(json.usd ?? json.amount ?? 0.01)
+      const currency = json.currency === '116' ? '116' : '840'
+      const amount =
+        currency === '116' ? Math.round(usd * 4100) : Number(usd.toFixed(2))
+      const built = generateKhqrIndividual({
+        bakongAccountID: json.account || cfg.account || process.env.BAKONG_ACCOUNT,
+        merchantName: json.merchantName || cfg.organization || 'Dyna Store',
+        merchantCity: json.merchantCity || 'Phnom Penh',
+        amount,
+        currency,
+      })
+      return sendJson(res, 200, { ok: true, ...built })
+    } catch (err) {
+      return sendJson(res, 400, { error: String(err.message) })
+    }
   }
 
   if (req.method === 'GET') {
@@ -385,8 +409,8 @@ await ensureServerJwt()
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.log('')
-    console.log('  Port 8787 is already in use — Dyna Store is probably already running.')
-    console.log('  Open:  http://127.0.0.1:8787/index.html')
+    console.log(`  Port ${PORT} is already in use — server may already be running.`)
+    console.log(`  Open:  http://127.0.0.1:${PORT}/index.html`)
     console.log('')
     process.exit(0)
   }

@@ -447,21 +447,54 @@ async function init() {
 
   window.showKhqrToast = showToast
 
+  function setTopupReady(ready) {
+    const btn = $('topupConfirm')
+    if (!btn) return
+    btn.disabled = !ready
+    btn.setAttribute('aria-busy', ready ? 'false' : 'true')
+  }
+
+  async function waitForKhqr(maxMs = 12000) {
+    if (window.Khqr?.openKhqrModal) return true
+    const deadline = Date.now() + maxMs
+    return new Promise((resolve) => {
+      const tick = () => {
+        if (window.Khqr?.openKhqrModal) {
+          resolve(true)
+          return
+        }
+        if (Date.now() >= deadline) {
+          resolve(false)
+          return
+        }
+        setTimeout(tick, 80)
+      }
+      tick()
+    })
+  }
+
+  setTopupReady(Boolean(window.Khqr?.openKhqrModal))
+
   $('topupConfirm')?.addEventListener('click', async () => {
     if (!window.Khqr?.openKhqrModal) {
-      showToast('Still loading… wait 2 seconds and try again')
-      return
+      setTopupReady(false)
+      const ready = await waitForKhqr(12000)
+      setTopupReady(ready)
+      if (!ready) {
+        showToast('Payment module did not load — refresh or open http://127.0.0.1:8787')
+        return
+      }
     }
     Khqr.saveSettings?.()
     const btn = $('topupConfirm')
     if (btn) btn.disabled = true
     try {
       await Khqr.redirectToPaymentServerIfNeeded?.()
-      Khqr.openKhqrModal(selectedTopup)
+      await Khqr.openKhqrModal(selectedTopup)
       void Khqr.ensurePaymentReady?.().then(async () => {
         const online = await Khqr.discoverProxy?.()
         if (!online) {
-          showToast('Run start.bat → http://127.0.0.1:8787 — then pay QR for balance update')
+          showToast(Khqr.paymentHelpMessage?.() || 'Payment API offline — check server config')
           global.DynaServer?.setOnline?.(false, Khqr.hasJwtForPayment?.() ?? false)
         } else if (!global.DynaServer?.hasJwt) {
           showToast('After paying, tap Check payment now in the QR window')
@@ -481,14 +514,35 @@ async function init() {
 
   global.onDynaTopupSuccess = () => renderWallet(true)
   global.renderWallet = renderWallet
+  window.addEventListener('dyna-wallet-updated', () => renderWallet(true))
+
+  async function refreshPaymentApiStatus(showChecking = false) {
+    if (global.DynaPaymentStatus?.checkNow) {
+      const early = await global.DynaPaymentStatus.checkNow()
+      if (early) return true
+    }
+    if (!global.DynaServer?.ping) return false
+    Khqr?.applyConfigCredentials?.()
+    await Khqr?.warmServerJwt?.()
+    await global.DynaServer.ping()
+    const ready =
+      global.DynaServer?.hasJwt ||
+      Khqr?.hasJwtForPayment?.() ||
+      global.DYNA_PAYMENT_API_READY
+    const el = document.getElementById('serverStatus')
+    if (ready && el) el.classList.add('hidden')
+    return Boolean(ready)
+  }
+
+  setTopupReady(Boolean(window.Khqr?.openKhqrModal))
 
   if (window.Khqr) {
     Khqr.onPaymentSuccess = global.onDynaTopupSuccess
     Khqr.loadSettings?.()
     Khqr.initKhqrModal()
-    Khqr.ensurePaymentReady?.()
-    global.DynaServer?.ping?.()
-    setInterval(() => global.DynaServer?.ping?.(), 4000)
+    setTopupReady(true)
+    void refreshPaymentApiStatus(true)
+    setInterval(() => void refreshPaymentApiStatus(false), 12000)
     document.getElementById('serverStatus')?.addEventListener('click', (e) => {
       if (e.target.id === 'serverSaveApi') {
         const input = document.getElementById('apiBaseInput')
@@ -501,20 +555,37 @@ async function init() {
         return
       }
       if (e.target.id !== 'serverRetry') return
-      global.DynaServer?.ping?.().then((ok) => {
+      void (global.DynaPaymentStatus?.checkNow?.() || refreshPaymentApiStatus(true)).then(
+        (ok) => {
         showToast(
           ok
             ? 'Payment API connected'
-            : 'Still offline — renew token or run start.bat (local)',
+            : Khqr.paymentHelpMessage?.() || 'Payment API still offline',
         )
-      })
+        },
+      )
     })
     Khqr.bootstrapPaymentWatcher?.()
+
+    setInterval(() => {
+      const pending =
+        localStorage.getItem('dyna_pending_topup') ||
+        (() => {
+          try {
+            const h = JSON.parse(localStorage.getItem('dyna_payment_history') || '[]')
+            return Array.isArray(h) && h.length > 0 ? '1' : ''
+          } catch {
+            return ''
+          }
+        })()
+      if (pending) void Khqr.syncWalletAfterTopup?.()
+    }, 2000)
 
     document.getElementById('claimTopupBtn')?.addEventListener('click', async () => {
       const btn = document.getElementById('claimTopupBtn')
       if (btn) btn.disabled = true
       Khqr.applyConfigCredentials?.()
+      await Khqr.warmServerJwt?.()
       await Khqr.discoverProxy?.()
 
       const manual = document.getElementById('manualMd5Input')?.value?.trim().toLowerCase()
@@ -527,8 +598,16 @@ async function init() {
           return
         }
       }
+      if (manual && /^[a-f0-9]{8,}$/.test(manual)) {
+        const ok = await Khqr.checkByBakongHash?.(manual, selectedTopup)
+        if (ok) {
+          if (btn) btn.disabled = false
+          return
+        }
+      }
 
-      let ok = await Khqr.resumePendingTopup?.()
+      let ok = await Khqr.scanAllPendingPayments?.()
+      if (!ok) ok = await Khqr.resumePendingTopup?.()
       if (!ok) ok = await Khqr.checkAllPaymentHistory?.()
       if (!ok) {
         const last = localStorage.getItem('dyna_last_md5_check')
@@ -541,7 +620,7 @@ async function init() {
         showToast(
           detail
             ? `Bakong: ${detail}`
-            : 'Payment not found — run start.bat, pay new QR, paste MD5 from QR screen',
+            : 'Payment not found — run npm start or use Vercel, pay new QR, paste MD5 from QR screen',
         )
       }
       if (btn) btn.disabled = false
@@ -661,11 +740,15 @@ async function init() {
 
 window.DynaWallet = { getBalance, addBalance, setBalance, renderWallet }
 
-init().catch(function (err) {
-  console.error(err)
-  const msg = document.getElementById('bootMsg')
-  if (msg) {
-    msg.classList.remove('hidden')
-    msg.textContent = 'Could not start — open http://127.0.0.1:8787/index.html (run start.bat)'
-  }
-})
+window.startDynaApp = function startDynaApp() {
+  if (window.__dynaAppStarted) return
+  window.__dynaAppStarted = true
+  init().catch(function (err) {
+    console.error(err)
+    const msg = document.getElementById('bootMsg')
+    if (msg) {
+      msg.classList.remove('hidden')
+      msg.textContent = 'Could not start — run npm start or open http://127.0.0.1:8787'
+    }
+  })
+}

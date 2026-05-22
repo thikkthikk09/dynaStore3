@@ -1,8 +1,8 @@
-import { handlePaymentVerify, paymentFunctionConfig } from './payment-handler.mjs'
+import { handlePaymentVerify, paymentFunctionConfig } from '../payment-handler.mjs'
 
 export const config = paymentFunctionConfig
 
-/** Browser + app poll: POST /api/check-md5 { md5, token? } */
+/** Alias: POST /api/payment/check (same as /api/check-md5) */
 export default async function handler(req, res) {
   return handlePaymentVerify(req, res, { allowGet: false })
 }
