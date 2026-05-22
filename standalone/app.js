@@ -517,7 +517,14 @@ async function init() {
   window.addEventListener('dyna-wallet-updated', () => renderWallet(true))
 
   async function refreshPaymentApiStatus(showChecking = false) {
-    if (global.DynaPaymentStatus?.checkNow) {
+    if (window.DYNA_PAYMENT_API_READY) {
+      document.getElementById('serverStatus')?.classList.add('hidden')
+      return true
+    }
+    if (global.DynaPaymentStatus?.runCheck) {
+      const early = await global.DynaPaymentStatus.runCheck(showChecking)
+      if (early) return true
+    } else if (global.DynaPaymentStatus?.checkNow) {
       const early = await global.DynaPaymentStatus.checkNow()
       if (early) return true
     }

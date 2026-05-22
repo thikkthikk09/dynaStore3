@@ -92,10 +92,10 @@
           await window.Khqr.renewJwtDirect()
         } catch (_) {}
       }
+      if (window.DynaPaymentStatus?.runCheck) {
+        await window.DynaPaymentStatus.runCheck(false)
+      }
     })()
-    if (window.DynaPaymentStatus?.checkNow) {
-      void window.DynaPaymentStatus.checkNow()
-    }
   }
 
   function loadScript(i) {
