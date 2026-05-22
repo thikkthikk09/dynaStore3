@@ -297,7 +297,7 @@
   }
 
   function relaySetupMessage() {
-    return 'Bakong blocks Vercel. On your PC run: npm run relay — copy the HTTPS link → paste below → Save relay (keep terminal open).'
+    return 'After paying: Advanced → Relay URL → paste https link from npm run relay → Check payment now.'
   }
 
   function relayFetch(url, init) {
@@ -1701,9 +1701,11 @@
       await discoverProxy()
       await warmServerJwt()
 
-      if ((isVercelHost() || isGitHubPages()) && !paymentVerifyPossible()) {
+      const needsRelay = (isVercelHost() || isGitHubPages()) && !paymentVerifyPossible()
+      if (needsRelay) {
         setPaymentStatus('pending', relaySetupMessage())
         document.getElementById('khqrAdvanced')?.classList.remove('hidden')
+        checking = false
         return
       }
 
@@ -1812,8 +1814,6 @@
       if (err.message === 'RELAY_REQUIRED') {
         setPaymentStatus('pending', relaySetupMessage())
         document.getElementById('khqrAdvanced')?.classList.remove('hidden')
-        document.getElementById('bakongRelay')?.focus()
-        global.showKhqrToast?.(relaySetupMessage())
         return
       }
       if (err.message === 'PROXY_OFFLINE') {
@@ -1928,13 +1928,6 @@
         /* ignore */
       }
     }
-    if ((isVercelHost() || isGitHubPages()) && !paymentVerifyPossible()) {
-      global.showKhqrToast?.(relaySetupMessage())
-      document.getElementById('khqrAdvanced')?.classList.remove('hidden')
-      document.getElementById('bakongRelay')?.focus()
-      return
-    }
-
     overlay.classList.add('open')
     overlay.setAttribute('aria-hidden', 'false')
     document.body.style.overflow = 'hidden'
@@ -1981,8 +1974,17 @@
     renderQr(document.getElementById('khqrQr'), currentPayload)
 
     paymentCredited = false
-    document.getElementById('khqrAdvanced')?.classList.toggle('hidden', serverHasJwt || Boolean(getToken()))
-    setPaymentStatus('pending', 'Scan & pay — balance updates automatically')
+    const needsRelayHint = (isVercelHost() || isGitHubPages()) && !paymentVerifyPossible()
+    document.getElementById('khqrAdvanced')?.classList.toggle(
+      'hidden',
+      !needsRelayHint && (serverHasJwt || Boolean(getToken())),
+    )
+    setPaymentStatus(
+      'pending',
+      needsRelayHint
+        ? 'Scan & pay — then set Relay URL in Advanced to verify payment'
+        : 'Scan & pay — balance updates automatically',
+    )
     ensurePaymentReady().finally(() => {
       startPolling()
       void autoBalanceFromPending()

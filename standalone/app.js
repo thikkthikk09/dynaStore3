@@ -493,11 +493,11 @@ async function init() {
       await Khqr.openKhqrModal(selectedTopup)
       void Khqr.ensurePaymentReady?.().then(async () => {
         const online = await Khqr.discoverProxy?.()
-        if (!online) {
+        if (!online && !Khqr.paymentVerifyPossible?.()) {
+          /* QR is open; relay hint is shown inside the modal */
+        } else if (!online) {
           showToast(Khqr.paymentHelpMessage?.() || 'Payment API offline — check server config')
           global.DynaServer?.setOnline?.(false, Khqr.hasJwtForPayment?.() ?? false)
-        } else if (!global.DynaServer?.hasJwt) {
-          showToast('After paying, tap Check payment now in the QR window')
         }
       })
     } catch (err) {
