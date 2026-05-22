@@ -46,15 +46,8 @@
     return [...new Set(list.map((u) => String(u || '').trim().replace(/\/$/, '')).filter((u) => u.startsWith('https://')))]
   }
 
-  function showRelayBanner(show) {
-    const el = document.getElementById('relaySetupBanner')
-    if (!el) return
-    el.classList.toggle('hidden', !show)
-    if (show) {
-      hideStatus()
-      const input = document.getElementById('topupRelayUrl')
-      if (input && !input.value) input.value = relayCandidates()[0] || ''
-    }
+  function showRelayBanner() {
+    /* Relay setup lives in QR → Advanced → Relay URL (top banner removed) */
   }
 
   async function applyRelayUrl(url, statusEl) {
@@ -105,15 +98,7 @@
     return true
   }
 
-  function bindRelayBanner() {
-    document.getElementById('saveRelayBtn')?.addEventListener('click', async () => {
-      const btn = document.getElementById('saveRelayBtn')
-      const url = document.getElementById('topupRelayUrl')?.value?.trim() || ''
-      if (btn) btn.disabled = true
-      await applyRelayUrl(url, null)
-      if (btn) btn.disabled = false
-    })
-  }
+  function bindRelayBanner() {}
 
   async function tryAutoRelayFromBoot() {
     for (const candidate of relayCandidates()) {
@@ -459,10 +444,7 @@
     }
     bindRetry()
     bindRelayBanner()
-    void (async () => {
-      await runCheck(!isVercel())
-      if (isVercel() && !window.DYNA_PAYMENT_API_READY) showRelayBanner(true)
-    })()
+    void runCheck(!isVercel())
   }
 
   if (document.readyState === 'loading') {
