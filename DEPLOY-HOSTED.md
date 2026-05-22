@@ -19,9 +19,9 @@ On **your PC** (`npm start`) this works. On **Vercel** it often fails for **two 
 
 | Name | Value |
 |------|--------|
-| `BAKONG_TOKEN` | JWT starting with `eyJ…` (from `.env`, **not** the `rbk…` code) |
 | `BAKONG_EMAIL` | `thikkthikk09@gmail.com` |
-| `BAKONG_REGISTER_TOKEN` | `rbk…` code from Bakong register |
+| `BAKONG_REGISTER_TOKEN` | `rbk82qAU7sFjn7CG2mAP-CA0_mKVz_RNVRcNlA60b3oNkY` (register code — **not** MD5 JWT) |
+| `BAKONG_TOKEN` | JWT starting with `eyJ…` (optional if register token renew works) |
 | `BAKONG_ACCOUNT` | `ben_sothida@bkrt` |
 | `DYNA_SITE_URL` | `https://dyna-store3.vercel.app` |
 

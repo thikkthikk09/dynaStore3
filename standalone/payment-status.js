@@ -84,16 +84,88 @@
 
 
 
+  function bakongCfg() {
+    const file = window.DYNA_BAKONG_CONFIG || {}
+    const runtime = window.DYNA_RUNTIME_CONFIG || {}
+    const t = String(file.token || runtime.token || '').trim()
+    const r = String(file.registerToken || runtime.registerToken || '').trim()
+    if (t.startsWith('rbk') && r.startsWith('eyJ')) {
+      return { ...file, ...runtime, token: r, registerToken: t }
+    }
+    return { ...file, ...runtime }
+  }
+
   function clientJwtReady() {
-
-    const t = String(
-
-      window.DYNA_BAKONG_CONFIG?.token || localStorage.getItem('dyna_bakong_token') || '',
-
-    ).trim()
-
+    const t = String(bakongCfg().token || localStorage.getItem('dyna_bakong_token') || '').trim()
     return t.startsWith('eyJ')
+  }
 
+  function clientRegisterReady() {
+    const r = String(bakongCfg().registerToken || '').trim()
+    return r.startsWith('rbk')
+  }
+
+  function clientEmail() {
+    return String(bakongCfg().email || localStorage.getItem('dyna_bakong_email') || '').trim()
+  }
+
+  function storeClientJwt(jwt) {
+    if (!jwt?.startsWith('eyJ')) return false
+    localStorage.setItem('dyna_bakong_token', jwt)
+    window.DYNA_BAKONG_CONFIG = { ...(window.DYNA_BAKONG_CONFIG || {}), token: jwt }
+    return true
+  }
+
+  async function renewClientJwt() {
+    const email = clientEmail()
+    if (!email || !clientRegisterReady()) return false
+    const cfg = bakongCfg()
+    const renewBody = {
+      email,
+      organization: cfg.organization || 'Dyna Store',
+      project: cfg.project || 'dyna_store',
+      token: cfg.registerToken,
+    }
+
+    try {
+      const res = await fetch('https://api-bakong.nbc.gov.kh/v1/renew_token', {
+        method: 'POST',
+        mode: 'cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(renewBody),
+      })
+      const json = await res.json()
+      if (json.responseCode === 0 && json.data?.token?.startsWith('eyJ')) {
+        return storeClientJwt(json.data.token)
+      }
+    } catch (e) {
+      console.warn('renewClientJwt direct', e)
+    }
+
+    const base =
+      window.DynaPaymentApiBase?.resolve?.() ||
+      cfg.apiBase ||
+      cfg.publicSiteUrl ||
+      'https://dyna-store3.vercel.app'
+    try {
+      const res = await fetch(`${base.replace(/\/$/, '')}/api/renew-token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(renewBody),
+      })
+      const json = await res.json()
+      if (json.responseCode === 0 && json.data?.token?.startsWith('eyJ')) {
+        return storeClientJwt(json.data.token)
+      }
+    } catch (e) {
+      console.warn('renewClientJwt proxy', e)
+    }
+    return false
+  }
+
+  async function ensureClientJwt() {
+    if (clientJwtReady()) return true
+    return renewClientJwt()
   }
 
 
@@ -218,12 +290,9 @@
 
 
 
-    if (clientJwtReady()) {
-
+    if (await ensureClientJwt()) {
       const fallback = cfgOnly || 'https://dyna-store3.vercel.app'
-
       return markApiReady(fallback)
-
     }
 
 
@@ -302,29 +371,33 @@
 
       const h = text ? JSON.parse(text) : {}
 
-      if (h.hasJwt || h.hasToken || clientJwtReady()) {
-
+      if (h.hasJwt || h.hasToken) {
         return markApiReady(location.origin)
+      }
 
+      if (await ensureClientJwt()) {
+        return markApiReady(location.origin)
+      }
+
+      if (clientRegisterReady() && clientEmail()) {
+        setStatus(
+          '<strong>Renewing Bakong token…</strong> <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>',
+          'offline',
+        )
+        if (await renewClientJwt()) return markApiReady(location.origin)
       }
 
       setStatus(
-
         isVercel()
-
-          ? '<strong>No JWT on server.</strong> Vercel → <code>BAKONG_TOKEN</code> (eyJ) + redeploy. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>'
-
-          : '<strong>No JWT.</strong> Add <code>BAKONG_TOKEN</code> to <code>.env</code> and run <code>npm start</code>. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>',
-
+          ? '<strong>Bakong login needed.</strong> On Vercel add <code>BAKONG_EMAIL</code> + <code>BAKONG_REGISTER_TOKEN</code> (rbk…) or <code>BAKONG_TOKEN</code> (eyJ…) → redeploy. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>'
+          : '<strong>No JWT.</strong> Add token to <code>.env</code> or <code>bakong.config.local.js</code>, run <code>npm start</code>. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>',
         'offline',
-
       )
 
       return false
 
     } catch {
-
-      if (clientJwtReady()) return markApiReady(location.origin)
+      if (await ensureClientJwt()) return markApiReady(location.origin)
 
       setStatus(
 

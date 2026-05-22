@@ -12,8 +12,6 @@ window.DYNA_BAKONG_CONFIG = {
   account: 'ben_sothida@bkrt',
   organization: 'Dyna Store',
   project: 'dyna_store',
-  email: 'thikkthikk09@gmail.com',
-  token:
-    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhIjp7ImlkIjoiMWJkOTRjMDY2ODViNGIwMiJ9LCJpYXQiOjE3Nzk0NDg5MDgsImV4cCI6MTc4NzIyNDkwOH0.YE6b6OeaKlqiTVWR2-5fM2_NouOzGVHNoESKmNDXuJg',
+  email: 'thikkthikk09@gmail.com',  token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhIjp7ImlkIjoiMWJkOTRjMDY2ODViNGIwMiJ9LCJpYXQiOjE3Nzk0NzMwMTMsImV4cCI6MTc4NzI0OTAxM30.qGLOOLKx8VbBu0hr1Eb2vDmUbEbtT6A6EBCOaJRFUgs',
   registerToken: 'rbk82qAU7sFjn7CG2mAP-CA0_mKVz_RNVRcNlA60b3oNkY',
 }

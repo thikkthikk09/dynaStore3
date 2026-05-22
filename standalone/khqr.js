@@ -193,13 +193,31 @@
       ? resolveProxyRenew()
       : `${PAYMENT_CHECK.apiBase}/v1/renew_token`
 
-    const res = await fetch(renewUrl, {
-      method: 'POST',
-      mode: 'cors',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    const json = await res.json()
+    let json = null
+    try {
+      const direct = await fetch(`${PAYMENT_CHECK.apiBase}/v1/renew_token`, {
+        method: 'POST',
+        mode: 'cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      json = await direct.json()
+    } catch {
+      /* try proxy */
+    }
+    if (!json || json.errorCode === 6 || json._bakongHttp === 403) {
+      try {
+        const res = await fetch(renewUrl, {
+          method: 'POST',
+          mode: 'cors',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        json = await res.json()
+      } catch {
+        return ''
+      }
+    }
     if (json.responseCode === 0 && json.data?.token?.startsWith('eyJ')) {
       const jwt = json.data.token
       localStorage.setItem(TOKEN_KEY, jwt)

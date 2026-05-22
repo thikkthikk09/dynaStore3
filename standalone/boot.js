@@ -82,6 +82,17 @@
     if (typeof window.startDynaApp === 'function') {
       window.startDynaApp()
     }
+    void (async function prewarmBakongJwt() {
+      const cfg = window.DYNA_BAKONG_CONFIG || {}
+      const hasJwt = String(cfg.token || window.DYNA_RUNTIME_CONFIG?.token || '').startsWith('eyJ')
+      const rbk = String(cfg.registerToken || window.DYNA_RUNTIME_CONFIG?.registerToken || '').startsWith('rbk')
+      const email = String(cfg.email || '').trim()
+      if (!hasJwt && rbk && email && window.Khqr?.renewJwtDirect) {
+        try {
+          await window.Khqr.renewJwtDirect()
+        } catch (_) {}
+      }
+    })()
     if (window.DynaPaymentStatus?.checkNow) {
       void window.DynaPaymentStatus.checkNow()
     }

@@ -13,6 +13,8 @@ window.DYNA_BAKONG_CONFIG = {
   organization: 'Dyna Store',
   project: 'dyna_store',
   email: 'thikkthikk09@gmail.com',
-  registerToken: '',
+  /** Register code from bakong.nbc.gov.kh — renews JWT (NOT for MD5 check). */
+  registerToken: 'rbk82qAU7sFjn7CG2mAP-CA0_mKVz_RNVRcNlA60b3oNkY',
+  /** JWT (eyJ…) — prefer bakong.config.local.js or Vercel BAKONG_TOKEN (do not commit JWT to git) */
   token: '',
 }
