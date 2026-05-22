@@ -591,45 +591,20 @@ async function init() {
     document.getElementById('claimTopupBtn')?.addEventListener('click', async () => {
       const btn = document.getElementById('claimTopupBtn')
       if (btn) btn.disabled = true
-      Khqr.applyConfigCredentials?.()
-      await Khqr.warmServerJwt?.()
-      await Khqr.discoverProxy?.()
-
-      const manual = document.getElementById('manualMd5Input')?.value?.trim().toLowerCase()
-      if (manual && /^[a-f0-9]{32}$/.test(manual)) {
-        const usd = Khqr.usdForMd5?.(manual) ?? selectedTopup
-        Khqr.addPaymentHistory?.(manual, usd)
-        const ok = await Khqr.checkMd5AndCredit?.(manual, usd)
-        if (ok) {
-          if (btn) btn.disabled = false
-          return
-        }
-      }
-      if (manual && /^[a-f0-9]{8,}$/.test(manual)) {
-        const ok = await Khqr.checkByBakongHash?.(manual, selectedTopup)
-        if (ok) {
-          if (btn) btn.disabled = false
-          return
-        }
-      }
-
-      let ok = await Khqr.scanAllPendingPayments?.()
-      if (!ok) ok = await Khqr.resumePendingTopup?.()
-      if (!ok) ok = await Khqr.checkAllPaymentHistory?.()
-      if (!ok) {
-        const last = localStorage.getItem('dyna_last_md5_check')
-        let detail = ''
-        try {
-          detail = JSON.parse(last || '{}').detail || ''
-        } catch {
-          /* ignore */
-        }
+      const manual = document.getElementById('manualMd5Input')?.value?.trim()
+      const result = await Khqr.tryClaimPendingPayment?.(manual)
+      if (result?.ok) {
+        renderWallet(true)
+        showToast('Balance updated')
+      } else {
+        const detail = result?.detail || ''
         showToast(
           detail
-            ? `Bakong: ${detail}`
-            : 'Payment not found — run npm start or use Vercel, pay new QR, paste MD5 from QR screen',
+            ? String(detail).slice(0, 140)
+            : 'Not confirmed — run npm run relay, set Relay URL in QR Advanced, or use http://127.0.0.1:8787',
         )
       }
+      Khqr.syncPendingUi?.()
       if (btn) btn.disabled = false
     })
   }

@@ -715,11 +715,108 @@
         const ok = await checkByBakongHash(bakongHash, creditUsd)
         if (ok) return true
       }
+
+      const msg = String(json?.responseMessage || json?.error || '')
+      if (isBakongBlockedResponse(json)) {
+        saveLastCheck(
+          hash,
+          'pending',
+          'Vercel blocked — run npm run relay, paste https URL in Advanced → Relay URL',
+        )
+      } else if (/not found|no transaction/i.test(msg)) {
+        saveLastCheck(hash, 'pending', msg || 'Transaction not in Bakong yet — wait 30s and Sync again')
+      } else {
+        saveLastCheck(hash, parsePaymentStatus(json), msg)
+      }
     } catch (err) {
-      saveLastCheck(hash, 'error', String(err.message || err))
+      const detail =
+        err.message === 'PROXY_OFFLINE'
+          ? needsRelayForVerify()
+            ? 'Run npm run relay on PC → Advanced → Relay URL'
+            : 'Payment API offline'
+          : String(err.message || err)
+      saveLastCheck(hash, 'error', detail)
       console.warn('checkMd5AndCredit', err)
     }
     return false
+  }
+
+  function getPendingPaymentInfo() {
+    let usd = Number(currentUsd) || 0.01
+    let md5 = String(currentMd5 || '').toLowerCase()
+    let qr = String(currentPayload || '').trim()
+    try {
+      const raw = localStorage.getItem(PENDING_KEY)
+      if (raw) {
+        const p = JSON.parse(raw)
+        if (p.md5) md5 = String(p.md5).toLowerCase()
+        if (p.usd) usd = Number(p.usd) || usd
+        if (p.qr) qr = String(p.qr).trim()
+      }
+    } catch {
+      /* ignore */
+    }
+    if (!/^[a-f0-9]{32}$/.test(md5)) {
+      const hist = getPaymentHistory().slice().reverse()
+      const item = hist.find((x) => /^[a-f0-9]{32}$/.test(String(x.md5 || '')))
+      if (item) {
+        md5 = String(item.md5).toLowerCase()
+        usd = Number(item.usd) || usd
+        qr = item.qr || qr
+      }
+    }
+    return { md5, usd, qr }
+  }
+
+  /** Sync button + pending banner — tries pending MD5 first (not stale manual input). */
+  async function tryClaimPendingPayment(manualOverride) {
+    applyConfigCredentials()
+    if (!hasJwtForPayment() && getBakongEmail() && getRegisterCode()) {
+      try {
+        await renewJwtDirect()
+      } catch {
+        /* ignore */
+      }
+    }
+    await discoverProxy()
+    await warmServerJwt()
+
+    const pending = getPendingPaymentInfo()
+    const manual = String(manualOverride || '').trim().toLowerCase()
+    const tries = []
+
+    if (/^[a-f0-9]{32}$/.test(manual)) {
+      tries.push({ md5: manual, usd: usdForMd5(manual) ?? pending.usd })
+    }
+    if (/^[a-f0-9]{8,}$/.test(manual) && manual.length < 32) {
+      const ok = await checkByBakongHash(manual, pending.usd)
+      if (ok) return { ok: true, md5: manual }
+    }
+    if (/^[a-f0-9]{32}$/.test(pending.md5)) {
+      tries.push({ md5: pending.md5, usd: pending.usd, qr: pending.qr })
+    }
+    for (const item of getPaymentHistory().slice().reverse()) {
+      if (!item?.md5 || creditedMd5.has(item.md5)) continue
+      if (!tries.some((t) => t.md5 === item.md5)) {
+        tries.push({ md5: item.md5, usd: item.usd, qr: item.qr })
+      }
+    }
+
+    for (const t of tries) {
+      if (await checkMd5AndCredit(t.md5, t.usd)) {
+        updatePendingBanner(false)
+        return { ok: true, md5: t.md5 }
+      }
+    }
+
+    let detail = ''
+    try {
+      detail = JSON.parse(localStorage.getItem(LAST_CHECK_KEY) || '{}').detail || ''
+    } catch {
+      /* ignore */
+    }
+    updatePendingBanner(true)
+    return { ok: false, detail }
   }
 
   async function checkByBakongHash(bakongHash, usd) {
@@ -837,16 +934,23 @@
       try {
         const last = JSON.parse(localStorage.getItem(LAST_CHECK_KEY) || '{}')
         if (last.status === 'paid') statusEl.textContent = 'Bakong: paid — balance updated'
-        else if (last.status === 'error') statusEl.textContent = 'Check failed — retry or paste MD5 from QR'
-        else if (last.detail) statusEl.textContent = `Bakong: ${last.detail}`
-        else statusEl.textContent = 'Checking with Bakong every 1.5s…'
+        else if (last.status === 'error') {
+          statusEl.textContent = last.detail
+            ? String(last.detail).slice(0, 120)
+            : 'Check failed — tap Sync payment'
+        } else if (last.detail) statusEl.textContent = String(last.detail).slice(0, 120)
+        else statusEl.textContent = 'Paid? Tap Sync payment — auto-check every 2s'
       } catch {
         statusEl.textContent = 'Tap button below after you paid'
       }
     }
 
     const input = document.getElementById('manualMd5Input')
-    if (input && md5 && !input.value) input.value = md5
+    if (input && md5) input.value = md5
+  }
+
+  function syncPendingUi() {
+    updatePendingBanner(Boolean(localStorage.getItem(PENDING_KEY)))
   }
 
   function verifyKhqr(payload) {
@@ -1990,6 +2094,7 @@
 
     updateMd5Display()
     savePendingTopup()
+    syncPendingUi()
 
     renderQr(document.getElementById('khqrQr'), currentPayload)
 
@@ -2343,6 +2448,9 @@
     applyTopupCredit,
     resumePendingTopup,
     checkMd5AndCredit,
+    tryClaimPendingPayment,
+    getPendingPaymentInfo,
+    syncPendingUi,
     checkByBakongHash,
     scanAllPendingPayments,
     checkAllPaymentHistory,
