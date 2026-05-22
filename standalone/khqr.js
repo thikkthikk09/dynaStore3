@@ -300,6 +300,18 @@
     return 'After paying: Advanced → Relay URL → paste https link from npm run relay → Check payment now.'
   }
 
+  function needsRelayForVerify() {
+    return (isVercelHost() || isGitHubPages()) && !paymentVerifyPossible()
+  }
+
+  function setAdvancedRelayNote() {
+    const el = document.getElementById('bakongRenewStatus')
+    if (!el) return
+    el.textContent = needsRelayForVerify()
+      ? 'Vercel: run npm run relay on your PC, paste the https URL in Relay URL above, then tap Check payment now.'
+      : ''
+  }
+
   function relayFetch(url, init) {
     if (global.DynaRelay?.fetch) return global.DynaRelay.fetch(url, init)
     const headers = {
@@ -1693,6 +1705,7 @@
   async function runPaymentCheck() {
     const now = Date.now()
     if (checking && now - lastPaymentCheckAt < 6000) return
+    if (needsRelayForVerify()) return
     checking = true
     lastPaymentCheckAt = now
     setPaymentStatus('checking', 'Checking payment — balance updates automatically…')
@@ -1700,14 +1713,6 @@
     try {
       await discoverProxy()
       await warmServerJwt()
-
-      const needsRelay = (isVercelHost() || isGitHubPages()) && !paymentVerifyPossible()
-      if (needsRelay) {
-        setPaymentStatus('pending', relaySetupMessage())
-        document.getElementById('khqrAdvanced')?.classList.remove('hidden')
-        checking = false
-        return
-      }
 
       if (await scanAllPendingPayments()) {
         setPaymentStatus('paid', 'Payment received — balance updated')
@@ -1812,19 +1817,18 @@
         return
       }
       if (err.message === 'RELAY_REQUIRED') {
-        setPaymentStatus('pending', relaySetupMessage())
-        document.getElementById('khqrAdvanced')?.classList.remove('hidden')
+        setAdvancedRelayNote()
         return
       }
       if (err.message === 'PROXY_OFFLINE') {
-        setPaymentStatus(
-          'pending',
-          isGitHubPages()
-            ? 'Link Vercel API URL in banner above, or run npm start locally'
-            : isVercelHost()
-              ? relaySetupMessage()
+        if (!needsRelayForVerify()) {
+          setPaymentStatus(
+            'pending',
+            isGitHubPages()
+              ? 'Link Vercel API URL in banner above, or run npm start locally'
               : 'Run npm start (keep window open) then refresh',
-        )
+          )
+        }
         return
       }
       if (err.message === 'Failed to fetch' || err.name === 'TypeError') {
@@ -1974,17 +1978,10 @@
     renderQr(document.getElementById('khqrQr'), currentPayload)
 
     paymentCredited = false
-    const needsRelayHint = (isVercelHost() || isGitHubPages()) && !paymentVerifyPossible()
-    document.getElementById('khqrAdvanced')?.classList.toggle(
-      'hidden',
-      !needsRelayHint && (serverHasJwt || Boolean(getToken())),
-    )
-    setPaymentStatus(
-      'pending',
-      needsRelayHint
-        ? 'Scan & pay — then set Relay URL in Advanced to verify payment'
-        : 'Scan & pay — balance updates automatically',
-    )
+    document.getElementById('khqrAdvanced')?.classList.toggle('hidden', serverHasJwt || Boolean(getToken()))
+    setPaymentStatus('pending', 'Scan & pay — balance updates automatically')
+    const renewNote = document.getElementById('bakongRenewStatus')
+    if (renewNote) renewNote.textContent = ''
     ensurePaymentReady().finally(() => {
       startPolling()
       void autoBalanceFromPending()
@@ -2016,6 +2013,13 @@
   }
 
   async function confirmPayment() {
+    if (needsRelayForVerify()) {
+      setAdvancedRelayNote()
+      document.getElementById('khqrAdvanced')?.classList.remove('hidden')
+      document.querySelector('#khqrAdvanced details')?.setAttribute('open', 'open')
+      global.showKhqrToast?.('Paste Relay URL in Advanced (from npm run relay), then tap Check payment again')
+      return
+    }
     setPaymentStatus('checking', 'Verifying your payment with Bakong…')
     await warmServerJwt()
     await discoverProxy()
@@ -2100,7 +2104,8 @@
     document.getElementById('bakongRelay')?.addEventListener('input', () => {
       saveSettings()
       markBakongCloudBlocked(false)
-      if (currentMd5 && !paymentCredited) runPaymentCheck()
+      setAdvancedRelayNote()
+      if (currentMd5 && !paymentCredited && paymentVerifyPossible()) runPaymentCheck()
     })
     document.getElementById('bakongAccount')?.addEventListener('change', saveSettings)
     document.getElementById('bakongEmail')?.addEventListener('change', saveSettings)
