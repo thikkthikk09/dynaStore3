@@ -180,6 +180,15 @@
       const acc = document.getElementById('bakongAccount')
       if (acc) acc.value = cfg.account
     }
+    const relay = String(cfg.relayUrl || global.DYNA_RUNTIME_CONFIG?.relayUrl || '').trim().replace(/\/$/, '')
+    if (relay.startsWith('https://')) {
+      try {
+        localStorage.setItem(RELAY_KEY, relay)
+      } catch {
+        /* ignore */
+      }
+      markBakongCloudBlocked(false)
+    }
   }
 
   /** Renew JWT via same-origin /api/renew-token (Vercel + local server). */
@@ -578,11 +587,7 @@
     if (relayUrl && isPaymentApiOrigin(relayUrl)) {
       urls.unshift(`${relayUrl}${API_CHECK_MD5}`)
     }
-    if ((isVercelHost() || isGitHubPages()) && (isBakongCloudBlockedCached() || !relayUrl)) {
-      urls = urls.filter((u) => !/\.vercel\.app|\.vercel\.sh/i.test(u))
-    }
     if (!urls.length) {
-      if (isVercelHost() || isGitHubPages()) throw new Error('RELAY_REQUIRED')
       if (!bearer.startsWith('eyJ')) throw new Error('PROXY_OFFLINE')
     }
 
@@ -612,9 +617,10 @@
         }
         if (isBakongBlockedResponse(json)) {
           sawBlocked = true
-          markBakongCloudBlocked(true)
+          if (!relayUrl) markBakongCloudBlocked(true)
         } else {
-          const paid = isBakongPaid(json)
+          markBakongCloudBlocked(false)
+          const paid = isBakongPaid(json) || json?._dyna?.paid === true
           return {
             ...json,
             _dyna: {
@@ -646,7 +652,6 @@
         },
       }
     }
-    if (sawBlocked && (isVercelHost() || isGitHubPages())) throw new Error('RELAY_REQUIRED')
     throw new Error('PROXY_OFFLINE')
   }
 
@@ -672,10 +677,11 @@
     }
 
     const tryCredit = async (json) => {
-      const st = isBakongPaid(json) ? 'paid' : parsePaymentStatus(json)
+      const paid = isBakongPaid(json) || json?._dyna?.paid === true
+      const st = paid ? 'paid' : parsePaymentStatus(json)
       const matchedMd5 = json?._dyna?.md5 || hash
       saveLastCheck(matchedMd5, st, json?.responseMessage || '')
-      if (isBakongPaid(json)) {
+      if (paid) {
         const paidUsd = usdFromBakongData(json, creditUsd)
         return applyTopupCredit(paidUsd, matchedMd5, json?.data)
       }
@@ -1704,13 +1710,20 @@
 
   async function runPaymentCheck() {
     const now = Date.now()
-    if (checking && now - lastPaymentCheckAt < 6000) return
-    if (needsRelayForVerify()) return
+    if (checking && now - lastPaymentCheckAt < 2000) return
     checking = true
     lastPaymentCheckAt = now
     setPaymentStatus('checking', 'Checking payment — balance updates automatically…')
 
     try {
+      applyConfigCredentials()
+      if (!hasJwtForPayment() && getBakongEmail() && getRegisterCode()) {
+        try {
+          await renewJwtDirect()
+        } catch {
+          /* ignore */
+        }
+      }
       await discoverProxy()
       await warmServerJwt()
 
@@ -1761,7 +1774,8 @@
         matchedMd5 = json?._dyna?.md5 || currentMd5
       }
 
-      if (isBakongPaid(json)) {
+      if (isBakongPaid(json) || json?._dyna?.paid === true) {
+        markBakongCloudBlocked(false)
         applyTopupCredit(usdFromBakongData(json, creditUsd), matchedMd5, json?.data)
         setPaymentStatus('paid', 'Payment received — balance updated')
         stopPolling()
@@ -1770,15 +1784,14 @@
       }
       if (status === 'no_token' || status === 'unauthorized') {
         const hint = String(json?.responseMessage || '')
+        const needsRelay = /403|RELAY|cloud|blocked/i.test(hint) && needsRelayForVerify()
         setPaymentStatus(
           'pending',
-          /403|RELAY|cloud/i.test(hint)
-            ? hint
-            : isVercelHost()
-              ? 'Paid? Wait ~30s, tap Check payment now — we verify from your browser (not Vercel server)'
-              : 'Paid? Tap Check payment now — keep npm start running',
+          needsRelay
+            ? 'Paid? Set Relay URL in Advanced (npm run relay) or tap Check payment now'
+            : 'Scan & pay — balance updates automatically',
         )
-        document.getElementById('khqrAdvanced')?.classList.remove('hidden')
+        if (needsRelay) document.getElementById('khqrAdvanced')?.classList.remove('hidden')
         return
       }
       if (status === 'failed') {
@@ -1851,6 +1864,9 @@
       )
     } finally {
       checking = false
+      if (!paymentCredited) {
+        setPaymentStatus('pending', 'Scan & pay — balance updates automatically')
+      }
     }
   }
 
@@ -1875,7 +1891,7 @@
         return
       }
       runPaymentCheck()
-    }, 1000)
+    }, 2000)
   }
 
   function renderQr(container, payload) {
@@ -2013,13 +2029,6 @@
   }
 
   async function confirmPayment() {
-    if (needsRelayForVerify()) {
-      setAdvancedRelayNote()
-      document.getElementById('khqrAdvanced')?.classList.remove('hidden')
-      document.querySelector('#khqrAdvanced details')?.setAttribute('open', 'open')
-      global.showKhqrToast?.('Paste Relay URL in Advanced (from npm run relay), then tap Check payment again')
-      return
-    }
     setPaymentStatus('checking', 'Verifying your payment with Bakong…')
     await warmServerJwt()
     await discoverProxy()
