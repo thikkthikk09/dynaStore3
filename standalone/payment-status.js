@@ -4,6 +4,7 @@
 ;(function () {
   const PUBLIC_API = 'https://dyna-store3.vercel.app'
   const LOCAL_API = 'http://127.0.0.1:8787'
+  const RELAY_KEY = 'dyna_relay_url'
   const PROBE_MS = 4500
 
   let checkInFlight = false
@@ -23,6 +24,43 @@
 
   function hideStatus() {
     statusEl()?.classList.add('hidden')
+  }
+
+  function relayUrl() {
+    try {
+      return String(localStorage.getItem(RELAY_KEY) || window.Khqr?.getRelayUrl?.() || '').trim().replace(/\/$/, '')
+    } catch {
+      return ''
+    }
+  }
+
+  function showRelayBanner(show) {
+    const el = document.getElementById('relaySetupBanner')
+    if (!el) return
+    el.classList.toggle('hidden', !show)
+    if (show) {
+      const input = document.getElementById('topupRelayUrl')
+      if (input && !input.value) input.value = relayUrl()
+    }
+  }
+
+  function bindRelayBanner() {
+    document.getElementById('saveRelayBtn')?.addEventListener('click', () => {
+      const url = document.getElementById('topupRelayUrl')?.value?.trim().replace(/\/$/, '') || ''
+      if (!url) return
+      try {
+        localStorage.setItem(RELAY_KEY, url)
+      } catch {
+        /* ignore */
+      }
+      const relayInput = document.getElementById('bakongRelay')
+      if (relayInput) relayInput.value = url
+      window.Khqr?.saveSettings?.()
+      showRelayBanner(false)
+      hideStatus()
+      window.DYNA_PAYMENT_API_READY = true
+      void window.Khqr?.resumePendingTopup?.()
+    })
   }
 
   function hasLocalApi() {
@@ -180,6 +218,8 @@
   async function tryQuickReady() {
     syncTokenFromConfig()
     const base = defaultApiBase()
+    if (isVercel() && relayUrl()) return markApiReady(relayUrl())
+    if (isVercel()) return false
     if (clientJwtReady()) return markApiReady(base)
 
     if (clientRegisterReady() && clientEmail()) {
@@ -257,10 +297,21 @@
     if (await tryQuickReady()) return true
 
     if (isVercel()) {
+      if (relayUrl()) return markApiReady(relayUrl())
+      const pubHealth = await probeHealth(PUBLIC_API)
+      if (pubHealth.data?.bakongBlocked || pubHealth.data?.hint?.includes('403')) {
+        showRelayBanner(true)
+        setStatus(
+          '<strong>Bakong blocks Vercel.</strong> Run <code>npm start</code> + <code>ngrok http 8787</code>, paste ngrok URL below. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>',
+          'offline',
+        )
+        return false
+      }
       if (await probeAnyHealth()) return true
       if (await tryQuickReady()) return true
+      showRelayBanner(true)
       setStatus(
-        '<strong>Bakong token needed.</strong> Vercel → <code>BAKONG_EMAIL</code> + <code>BAKONG_REGISTER_TOKEN</code> (rbk) or <code>BAKONG_TOKEN</code> (eyJ) → redeploy. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>',
+        '<strong>Payments need a relay.</strong> <code>npm start</code> → <code>ngrok http 8787</code> → paste URL in yellow box. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>',
         'offline',
       )
       return false
@@ -332,6 +383,7 @@
       return
     }
     bindRetry()
+    bindRelayBanner()
     void runCheck(true)
   }
 

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
+    "bakong:token": "node scripts/bakong-token.mjs",
     "dev": "vite",
     "dev:react": "vite --open /react.html",
     "build": "node scripts/copy-standalone-public.mjs && vite build",

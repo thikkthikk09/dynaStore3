@@ -23,11 +23,14 @@ export default async function handler(req, res) {
     bakongReachable =
       !bakongBlocked &&
       (probe.responseCode !== undefined || /not found/i.test(String(probe.responseMessage)))
+  } else if (process.env.VERCEL) {
+    bakongBlocked = true
   }
 
   let hint = null
   if (!hasJwt) {
-    hint = 'Vercel → Settings → Environment Variables → add BAKONG_TOKEN (eyJ…) + BAKONG_EMAIL → Redeploy'
+    hint =
+      'Vercel → add BAKONG_EMAIL + BAKONG_REGISTER_TOKEN (or BAKONG_TOKEN). Bakong blocks cloud IPs — use ngrok relay (see DEPLOY-HOSTED.md).'
   } else if (bakongBlocked && !relay) {
     hint =
       'Bakong blocks Vercel IPs. Run npm start, expose with ngrok, set BAKONG_RELAY_URL=https://YOUR-NGROK/api parent → Redeploy'

@@ -10,6 +10,8 @@
   const ACCOUNT_KEY = 'dyna_bakong_account'
   const EMAIL_KEY = 'dyna_bakong_email'
   const PENDING_KEY = 'dyna_pending_topup'
+  const RELAY_KEY = 'dyna_relay_url'
+  const BAKONG_BLOCKED_KEY = 'dyna_bakong_cloud_blocked'
   const CREDITED_KEY = 'dyna_credited_md5'
   const HISTORY_KEY = 'dyna_payment_history'
   const LAST_CHECK_KEY = 'dyna_last_md5_check'
@@ -111,6 +113,10 @@
     }
     if (isLivePreviewHost()) {
       global.DynaPaymentApiBase?.apply?.()
+    }
+    const storedToken = String(localStorage.getItem(TOKEN_KEY) || '').trim()
+    if (storedToken.startsWith('rbk')) {
+      localStorage.removeItem(TOKEN_KEY)
     }
   }
 
@@ -252,68 +258,42 @@
     }
   }
 
-  /**
-   * Check MD5 from the shopper's browser (not Vercel's IP).
-   * Bakong often blocks cloud servers but allows normal browsers — fixes public-site top-up.
-   */
-  async function requestBakongMd5FromBrowser(bearer, md5, qr) {
-    const hash = String(md5 || '').toLowerCase()
-    if (!bearer.startsWith('eyJ') || !/^[a-f0-9]{32}$/.test(hash)) return null
+  function getRelayUrl() {
+    const cfg = configDefaults()
+    const input = document.getElementById('bakongRelay')
+    const typed = String(input?.value || '').trim().replace(/\/$/, '')
+    const stored = String(localStorage.getItem(RELAY_KEY) || '').trim().replace(/\/$/, '')
+    return typed || stored || String(cfg.relayUrl || global.DYNA_RUNTIME_CONFIG?.relayUrl || '').trim().replace(/\/$/, '')
+  }
 
-    const list = md5Variants(hash, qr).slice(0, 12)
-
-    let lastJson = null
-    let matched = hash
-    const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), 22000)
+  function markBakongCloudBlocked(blocked) {
     try {
-      for (const h of list) {
-        try {
-          const res = await fetch(`${PAYMENT_CHECK.apiBase}/v1/check_transaction_by_md5`, {
-            method: 'POST',
-            mode: 'cors',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${bearer}`,
-            },
-            body: JSON.stringify({ md5: h }),
-            signal: ctrl.signal,
-          })
-          const json = await res.json()
-          lastJson = json
-          matched = h
-          if (isBakongPaid(json)) {
-            return {
-              ...json,
-              _dyna: {
-                paid: true,
-                md5: h,
-                direct: true,
-                hasJwt: true,
-                apiOrigin: 'browser',
-              },
-            }
-          }
-        } catch (err) {
-          if (err.name === 'AbortError') break
-          console.warn('direct Bakong MD5', h, err)
-        }
-      }
-    } finally {
-      clearTimeout(timer)
+      if (blocked) sessionStorage.setItem(BAKONG_BLOCKED_KEY, '1')
+      else sessionStorage.removeItem(BAKONG_BLOCKED_KEY)
+    } catch {
+      /* ignore */
     }
+  }
 
-    if (!lastJson) return null
-    return {
-      ...lastJson,
-      _dyna: {
-        paid: isBakongPaid(lastJson),
-        md5: matched,
-        direct: true,
-        hasJwt: true,
-        apiOrigin: 'browser',
-      },
+  function isBakongCloudBlockedCached() {
+    try {
+      return sessionStorage.getItem(BAKONG_BLOCKED_KEY) === '1'
+    } catch {
+      return false
     }
+  }
+
+  function paymentVerifyPossible() {
+    if (isLocalDev() && !isLivePreviewHost()) return true
+    if (getRelayUrl()) return true
+    if (!isVercelHost() && !isGitHubPages()) return hasPaymentApi()
+    return false
+  }
+
+  function relaySetupMessage() {
+    return (
+      'Bakong blocks Vercel. Run: npm start → ngrok http 8787 → paste ngrok URL in Advanced → Relay URL (keep both running).'
+    )
   }
 
   const MERCHANT = {
@@ -545,28 +525,22 @@
       md5List: /^[a-f0-9]{32}$/.test(md5) ? md5Variants(md5, qr).slice(0, 12) : undefined,
       token: bearer.startsWith('eyJ') ? bearer : undefined,
     }
-    const urls = paymentCheckUrls()
-    if (!urls.length && !bearer.startsWith('eyJ')) throw new Error('PROXY_OFFLINE')
-
-    const preferBrowser =
-      bearer.startsWith('eyJ') &&
-      /^[a-f0-9]{32}$/.test(md5) &&
-      (isVercelHost() || isGitHubPages() || isStaticHosting())
-
-    if (preferBrowser) {
-      const directFirst = await requestBakongMd5FromBrowser(bearer, md5, qr)
-      if (directFirst && isBakongPaid(directFirst)) return directFirst
+    const relayUrl = getRelayUrl()
+    let urls = paymentCheckUrls()
+    if (relayUrl && isPaymentApiOrigin(relayUrl)) {
+      urls.unshift(`${relayUrl}${API_CHECK_MD5}`)
+    }
+    if ((isVercelHost() || isGitHubPages()) && (isBakongCloudBlockedCached() || !relayUrl)) {
+      urls = urls.filter((u) => !/\.vercel\.app|\.vercel\.sh/i.test(u))
+    }
+    if (!urls.length) {
+      if (isVercelHost() || isGitHubPages()) throw new Error('RELAY_REQUIRED')
+      if (!bearer.startsWith('eyJ')) throw new Error('PROXY_OFFLINE')
     }
 
     let lastJson = null
     let lastOrigin = ''
     let sawBlocked = false
-    const relayUrl = String(configDefaults().relayUrl || global.DYNA_RUNTIME_CONFIG?.relayUrl || '')
-      .trim()
-      .replace(/\/$/, '')
-    if (relayUrl && isPaymentApiOrigin(relayUrl)) {
-      urls.unshift(`${relayUrl}${API_CHECK_MD5}`)
-    }
 
     for (const proxy of urls) {
       const ctrl = new AbortController()
@@ -589,6 +563,7 @@
         }
         if (isBakongBlockedResponse(json)) {
           sawBlocked = true
+          markBakongCloudBlocked(true)
         } else {
           const paid = isBakongPaid(json)
           return {
@@ -609,11 +584,6 @@
       }
     }
 
-    if (bearer.startsWith('eyJ') && /^[a-f0-9]{32}$/.test(md5) && (sawBlocked || !lastJson || !isBakongPaid(lastJson))) {
-      const direct = await requestBakongMd5FromBrowser(bearer, md5, qr)
-      if (direct && (isBakongPaid(direct) || !isBakongBlockedResponse(direct))) return direct
-    }
-
     if (lastJson) {
       const paid = isBakongPaid(lastJson)
       return {
@@ -627,6 +597,7 @@
         },
       }
     }
+    if (sawBlocked && (isVercelHost() || isGitHubPages())) throw new Error('RELAY_REQUIRED')
     throw new Error('PROXY_OFFLINE')
   }
 
@@ -1204,6 +1175,8 @@
         try {
           const h = await res.json()
           hasJwt = Boolean(h.hasJwt || h.hasToken) || hasJwt
+          if (h.bakongBlocked) markBakongCloudBlocked(true)
+          if (h.bakongReachable) markBakongCloudBlocked(false)
         } catch {
           /* ignore */
         }
@@ -1388,6 +1361,7 @@
   function saveSettings() {
     const token = document.getElementById('bakongToken')?.value?.trim()
     const proxy = document.getElementById('bakongProxy')?.value?.trim()
+    const relay = document.getElementById('bakongRelay')?.value?.trim().replace(/\/$/, '')
     const account = document.getElementById('bakongAccount')?.value?.trim()
     const email =
       document.getElementById('bakongEmail')?.value?.trim() ||
@@ -1396,6 +1370,8 @@
     else localStorage.removeItem(TOKEN_KEY)
     if (proxy) localStorage.setItem(PROXY_KEY, proxy)
     else localStorage.removeItem(PROXY_KEY)
+    if (relay) localStorage.setItem(RELAY_KEY, relay)
+    else localStorage.removeItem(RELAY_KEY)
     if (account) localStorage.setItem(ACCOUNT_KEY, account)
     else localStorage.removeItem(ACCOUNT_KEY)
     if (email) {
@@ -1411,6 +1387,7 @@
     const cfg = configDefaults()
     const tokenEl = document.getElementById('bakongToken')
     const proxyEl = document.getElementById('bakongProxy')
+    const relayEl = document.getElementById('bakongRelay')
     const accountEl = document.getElementById('bakongAccount')
     const emailEl = document.getElementById('bakongEmail')
     if (tokenEl) {
@@ -1422,6 +1399,10 @@
     }
     if (proxyEl) {
       proxyEl.value = resolveProxyUrl() || API_CHECK_MD5
+    }
+    if (relayEl) {
+      relayEl.value =
+        localStorage.getItem(RELAY_KEY) || cfg.relayUrl || global.DYNA_RUNTIME_CONFIG?.relayUrl || ''
     }
     if (accountEl) {
       accountEl.value =
@@ -1683,6 +1664,12 @@
       await discoverProxy()
       await warmServerJwt()
 
+      if ((isVercelHost() || isGitHubPages()) && !paymentVerifyPossible()) {
+        setPaymentStatus('pending', relaySetupMessage())
+        document.getElementById('khqrAdvanced')?.classList.remove('hidden')
+        return
+      }
+
       if (await scanAllPendingPayments()) {
         setPaymentStatus('paid', 'Payment received — balance updated')
         stopPolling()
@@ -1785,13 +1772,20 @@
         setPaymentStatus('pending', 'Checking payment…')
         return
       }
+      if (err.message === 'RELAY_REQUIRED') {
+        setPaymentStatus('pending', relaySetupMessage())
+        document.getElementById('khqrAdvanced')?.classList.remove('hidden')
+        document.getElementById('bakongRelay')?.focus()
+        global.showKhqrToast?.(relaySetupMessage())
+        return
+      }
       if (err.message === 'PROXY_OFFLINE') {
         setPaymentStatus(
           'pending',
           isGitHubPages()
             ? 'Link Vercel API URL in banner above, or run npm start locally'
             : isVercelHost()
-              ? 'Vercel API missing — check /api/health and BAKONG_TOKEN env'
+              ? relaySetupMessage()
               : 'Run npm start (keep window open) then refresh',
         )
         return
@@ -1887,6 +1881,20 @@
     if (isInvalidAccount(account)) {
       global.showKhqrToast?.('Enter your Bakong ID above (e.g. ben_sothida@bkrt)')
       document.getElementById('bakongAccount')?.focus()
+      return
+    }
+
+    if (!hasJwtForPayment() && getBakongEmail() && getRegisterCode()) {
+      try {
+        await renewJwtDirect()
+      } catch {
+        /* ignore */
+      }
+    }
+    if ((isVercelHost() || isGitHubPages()) && !paymentVerifyPossible()) {
+      global.showKhqrToast?.(relaySetupMessage())
+      document.getElementById('khqrAdvanced')?.classList.remove('hidden')
+      document.getElementById('bakongRelay')?.focus()
       return
     }
 
@@ -2049,6 +2057,12 @@
 
     document.getElementById('bakongToken')?.addEventListener('change', saveSettings)
     document.getElementById('bakongProxy')?.addEventListener('change', saveSettings)
+    document.getElementById('bakongRelay')?.addEventListener('change', saveSettings)
+    document.getElementById('bakongRelay')?.addEventListener('input', () => {
+      saveSettings()
+      markBakongCloudBlocked(false)
+      if (currentMd5 && !paymentCredited) runPaymentCheck()
+    })
     document.getElementById('bakongAccount')?.addEventListener('change', saveSettings)
     document.getElementById('bakongEmail')?.addEventListener('change', saveSettings)
 
@@ -2299,6 +2313,9 @@
     paymentHelpMessage,
     configuredSiteUrl,
     hasJwtForPayment,
+    getRelayUrl,
+    paymentVerifyPossible,
+    relaySetupMessage,
     saveSettings,
     formatKhr,
     formatUsd,

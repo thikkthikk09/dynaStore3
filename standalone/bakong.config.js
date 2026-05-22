@@ -15,6 +15,8 @@ window.DYNA_BAKONG_CONFIG = {
   email: 'thikkthikk09@gmail.com',
   /** Register code from bakong.nbc.gov.kh — renews JWT (NOT for MD5 check). */
   registerToken: 'rbk82qAU7sFjn7CG2mAP-CA0_mKVz_RNVRcNlA60b3oNkY',
-  /** JWT (eyJ…) — prefer bakong.config.local.js or Vercel BAKONG_TOKEN (do not commit JWT to git) */
+  /** JWT (eyJ…) — bakong.config.local.js or Vercel BAKONG_TOKEN (do not commit JWT to git) */
   token: '',
+  /** ngrok URL while npm start runs — required for customer top-up on Vercel */
+  relayUrl: '',
 }

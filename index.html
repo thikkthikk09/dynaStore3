@@ -90,6 +90,14 @@
 
     <section class="topup-section" id="topup">
       <div class="server-status server-status--offline hidden" id="serverStatus" role="status"></div>
+      <div class="relay-setup-banner hidden" id="relaySetupBanner" role="alert">
+        <strong>Top-up on Vercel needs a relay.</strong> Bakong blocks cloud servers. On your PC: <code>npm start</code> then <code>ngrok http 8787</code> — paste the https URL in Advanced → Relay URL (keep both running).
+        <label class="relay-setup-field">
+          <span>Relay URL (ngrok)</span>
+          <input type="url" id="topupRelayUrl" class="server-setup-input" placeholder="https://xxxx.ngrok-free.app" spellcheck="false" />
+          <button type="button" class="server-retry-btn" id="saveRelayBtn">Save relay</button>
+        </label>
+      </div>
       <div class="pending-topup-banner hidden" id="pendingTopupBanner">
         <strong>Already paid?</strong> Amount <span class="pending-topup-amount">$0.01</span>
         · MD5 <code class="pending-md5" id="pendingMd5Display">—</code>
@@ -245,6 +253,10 @@
             <label class="khqr-field">
               <span>API token</span>
               <input type="password" id="bakongToken" autocomplete="off" />
+            </label>
+            <label class="khqr-field">
+              <span>Relay URL <em>(required on Vercel — ngrok while npm start runs)</em></span>
+              <input type="url" id="bakongRelay" placeholder="https://xxxx.ngrok-free.app" autocomplete="off" />
             </label>
             <label class="khqr-field">
               <span>Proxy</span>
