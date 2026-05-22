@@ -300,14 +300,33 @@
     return 'Bakong blocks Vercel. On your PC run: npm run relay — copy the HTTPS link → paste below → Save relay (keep terminal open).'
   }
 
+  function relayFetch(url, init) {
+    if (global.DynaRelay?.fetch) return global.DynaRelay.fetch(url, init)
+    const headers = {
+      'Content-Type': 'application/json',
+      'Bypass-Tunnel-Reminder': 'true',
+      'bypass-tunnel-reminder': 'true',
+      ...(init?.headers || {}),
+    }
+    return fetch(url, { ...init, headers })
+  }
+
   async function testRelayHealth(url) {
     const base = String(url || '').trim().replace(/\/$/, '')
     if (!base.startsWith('https://')) return false
     try {
-      const res = await fetch(`${base}/api/health`, { method: 'GET', mode: 'cors', cache: 'no-store' })
+      const res = await relayFetch(`${base}/api/health`, {
+        method: 'GET',
+        mode: 'cors',
+        cache: 'no-store',
+      })
+      const ct = String(res.headers.get('content-type') || '')
       if (!res.ok) return false
+      if (!ct.includes('json')) {
+        return global.DynaRelay?.isTunnelHost?.(base) && res.ok
+      }
       const h = await res.json()
-      return Boolean(h.hasJwt || h.bakongReachable || h.ok)
+      return Boolean(h.hasJwt || h.bakongReachable || h.ok || h.hasRelay)
     } catch {
       return false
     }
@@ -563,10 +582,11 @@
       const ctrl = new AbortController()
       const timer = setTimeout(() => ctrl.abort(), 25000)
       try {
-        const res = await fetch(proxy, {
+        const useRelayHeaders = relayUrl && proxy.startsWith(relayUrl)
+        const res = await (useRelayHeaders ? relayFetch : fetch)(proxy, {
           method: 'POST',
           mode: 'cors',
-          headers: { 'Content-Type': 'application/json' },
+          headers: useRelayHeaders ? undefined : { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
           signal: ctrl.signal,
         })

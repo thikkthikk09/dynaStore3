@@ -105,6 +105,9 @@
           await window.Khqr.renewJwtDirect()
         } catch (_) {}
       }
+      if (window.DynaPaymentStatus?.autoSetupRelay) {
+        await window.DynaPaymentStatus.autoSetupRelay()
+      }
       if (window.DynaPaymentStatus?.runCheck) {
         await window.DynaPaymentStatus.runCheck(false)
       }

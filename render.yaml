@@ -1,0 +1,23 @@
+# Optional: always-on Bakong relay (not blocked like Vercel).
+# Deploy at https://render.com → New Blueprint → connect repo.
+# Then set BAKONG_RELAY_URL on Vercel to your Render URL (e.g. https://dyna-store-relay.onrender.com).
+
+services:
+  - type: web
+    name: dyna-store-relay
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.mjs
+    healthCheckPath: /api/health
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: BAKONG_EMAIL
+        sync: false
+      - key: BAKONG_REGISTER_TOKEN
+        sync: false
+      - key: BAKONG_TOKEN
+        sync: false
+      - key: BAKONG_ACCOUNT
+        value: ben_sothida@bkrt

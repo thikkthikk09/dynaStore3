@@ -34,13 +34,26 @@
     }
   }
 
+  function relayCandidates() {
+    const cfg = window.DYNA_BAKONG_CONFIG || {}
+    const rt = window.DYNA_RUNTIME_CONFIG || {}
+    const list = [
+      relayUrl(),
+      cfg.relayUrl,
+      rt.relayUrl,
+      window.DYNA_RELAY_AUTO?.relayUrl,
+    ]
+    return [...new Set(list.map((u) => String(u || '').trim().replace(/\/$/, '')).filter((u) => u.startsWith('https://')))]
+  }
+
   function showRelayBanner(show) {
     const el = document.getElementById('relaySetupBanner')
     if (!el) return
     el.classList.toggle('hidden', !show)
     if (show) {
+      hideStatus()
       const input = document.getElementById('topupRelayUrl')
-      if (input && !input.value) input.value = relayUrl()
+      if (input && !input.value) input.value = relayCandidates()[0] || ''
     }
   }
 
@@ -51,10 +64,23 @@
       return false
     }
     if (statusEl) statusEl.textContent = 'Testing relay…'
-    const ok = (await window.Khqr?.testRelayHealth?.(base)) ?? false
+    let ok = (await window.Khqr?.testRelayHealth?.(base)) ?? false
     if (!ok) {
+      try {
+        const probe = await (window.DynaRelay?.fetch || fetch)(`${base}/api/health`, {
+          method: 'GET',
+          mode: 'cors',
+          cache: 'no-store',
+        })
+        ok = probe.ok
+      } catch {
+        ok = false
+      }
+    }
+    if (!ok) {
+      showRelayBanner(true)
       setStatus(
-        `<strong>Relay not reachable.</strong> Run <code>npm run relay</code> on your PC, copy the HTTPS link, then Save again.`,
+        `<strong>Relay offline.</strong> Start <code>npm run relay</code> (or double-click <code>start-relay.bat</code>), copy the new https link, Save again.`,
         'offline',
       )
       return false
@@ -90,11 +116,16 @@
   }
 
   async function tryAutoRelayFromBoot() {
-    const auto = String(window.DYNA_RELAY_AUTO?.relayUrl || '').trim().replace(/\/$/, '')
-    const stored = relayUrl()
-    const candidate = stored || auto
-    if (!candidate.startsWith('https://')) return false
-    return applyRelayUrl(candidate, null)
+    for (const candidate of relayCandidates()) {
+      if (await applyRelayUrl(candidate, null)) return true
+    }
+    return false
+  }
+
+  async function autoSetupRelay() {
+    if (!isVercel()) return false
+    if (window.DYNA_PAYMENT_API_READY && relayUrl()) return true
+    return tryAutoRelayFromBoot()
   }
 
   function hasLocalApi() {
@@ -215,8 +246,13 @@
   async function probeHealth(base) {
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), PROBE_MS)
+    const b = base.replace(/\/$/, '')
+    const fetchFn =
+      window.DynaRelay?.isTunnelHost?.(b) && window.DynaRelay?.fetch
+        ? window.DynaRelay.fetch
+        : fetch
     try {
-      const res = await fetch(`${base.replace(/\/$/, '')}/api/health`, {
+      const res = await fetchFn(`${b}/api/health`, {
         method: 'GET',
         mode: 'cors',
         cache: 'no-store',
@@ -252,7 +288,10 @@
   async function tryQuickReady() {
     syncTokenFromConfig()
     const base = defaultApiBase()
-    if (isVercel() && relayUrl()) return markApiReady(relayUrl())
+    if (isVercel() && relayUrl()) {
+      const ok = await (window.Khqr?.testRelayHealth?.(relayUrl()) ?? false)
+      if (ok) return markApiReady(relayUrl())
+    }
     if (isVercel()) return false
     if (clientJwtReady()) return markApiReady(base)
 
@@ -338,6 +377,7 @@
     if (await tryQuickReady()) return true
 
     if (isVercel()) {
+      if (await tryAutoRelayFromBoot()) return true
       if (relayUrl()) {
         const ok = await (window.Khqr?.testRelayHealth?.(relayUrl()) ?? false)
         if (ok) {
@@ -345,23 +385,8 @@
           return markApiReady(relayUrl())
         }
       }
-      if (await tryAutoRelayFromBoot()) return true
-      const pubHealth = await probeHealth(PUBLIC_API)
-      if (pubHealth.data?.bakongBlocked || pubHealth.data?.hint?.includes('403')) {
-        showRelayBanner(true)
-        setStatus(
-          '<strong>Bakong blocks Vercel.</strong> On your PC: <code>npm run relay</code> → copy HTTPS link → paste below → Save relay. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>',
-          'offline',
-        )
-        return false
-      }
-      if (await probeAnyHealth()) return true
-      if (await tryQuickReady()) return true
       showRelayBanner(true)
-      setStatus(
-        '<strong>Payments need a relay.</strong> On your PC run <code>npm run relay</code>, copy the HTTPS link, paste in yellow box → Save relay. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>',
-        'offline',
-      )
+      hideStatus()
       return false
     }
 
@@ -399,7 +424,7 @@
       return true
     }
     checkInFlight = true
-    if (showBanner) {
+    if (showBanner && !isVercel()) {
       setStatus(
         '<strong>Checking payment API…</strong> <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>',
         'offline',
@@ -416,6 +441,8 @@
     checkNow: () => runCheck(false),
     hideStatus,
     runCheck,
+    applyRelayUrl,
+    autoSetupRelay,
   }
 
   function bindRetry() {
@@ -432,7 +459,10 @@
     }
     bindRetry()
     bindRelayBanner()
-    void runCheck(true)
+    void (async () => {
+      await runCheck(!isVercel())
+      if (isVercel() && !window.DYNA_PAYMENT_API_READY) showRelayBanner(true)
+    })()
   }
 
   if (document.readyState === 'loading') {

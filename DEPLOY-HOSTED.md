@@ -47,7 +47,11 @@ Copy the **https** URL printed in the terminal.
 
 Windows: double-click `start-relay.bat`.
 
-Optional Vercel env: `BAKONG_RELAY_URL` = same https URL → redeploy.
+Optional Vercel env: `BAKONG_RELAY_URL` = same https URL → redeploy (auto-fills relay on the site).
+
+### Always-on relay (no PC)
+
+Deploy `render.yaml` on [Render](https://render.com) (free). Set env vars (`BAKONG_EMAIL`, `BAKONG_REGISTER_TOKEN`, etc.). Copy the Render URL into Vercel `BAKONG_RELAY_URL` and redeploy — customers can pay without `npm run relay` on your PC.
 
 ## Step 3 — Redeploy latest code
 

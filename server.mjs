@@ -30,7 +30,9 @@ if (envErrors.length) {
   console.log('')
 }
 const PORT = Number(process.env.PORT) || 8787
-const HOST = process.env.HOST || (process.env.PORT ? '0.0.0.0' : '127.0.0.1')
+const HOST =
+  process.env.HOST ||
+  (process.env.RENDER || process.env.RAILWAY_ENVIRONMENT || process.env.PORT ? '0.0.0.0' : '127.0.0.1')
 const RUNTIME_FILE = path.join(ROOT, 'standalone', '.bakong-runtime.json')
 const BAKONG_API = 'https://api-bakong.nbc.gov.kh/v1/check_transaction_by_md5'
 const BAKONG_RENEW = 'https://api-bakong.nbc.gov.kh/v1/renew_token'

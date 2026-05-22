@@ -77,6 +77,31 @@
     return base
   }
 
+  /** Headers required for localtunnel (*.loca.lt) from the browser */
+  function relayHeaders(extra) {
+    return {
+      'Content-Type': 'application/json',
+      'Bypass-Tunnel-Reminder': 'true',
+      'bypass-tunnel-reminder': 'true',
+      ...(extra || {}),
+    }
+  }
+
+  function isTunnelHost(url) {
+    return /\.loca\.lt$|ngrok|trycloudflare\.com/i.test(String(url || ''))
+  }
+
+  async function fetchRelay(url, init) {
+    const headers = relayHeaders(init?.headers)
+    return fetch(url, { ...init, headers })
+  }
+
+  global.DynaRelay = {
+    headers: relayHeaders,
+    fetch: fetchRelay,
+    isTunnelHost,
+  }
+
   global.DynaPaymentApiBase = {
     resolve: resolvePaymentApiBase,
     apply: applyPaymentApiBase,

@@ -64,7 +64,7 @@ export async function startPaymentTunnel({ port, root }) {
     throw new Error('localtunnel not installed — run: npm install')
   }
 
-  const tunnel = await lt({ port })
+  const tunnel = await lt({ port, local_host: '127.0.0.1' })
   const url = String(tunnel.url || '').replace(/\/$/, '')
   writeRelayArtifacts(root, url)
 
