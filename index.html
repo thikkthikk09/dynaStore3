@@ -91,10 +91,10 @@
     <section class="topup-section" id="topup">
       <div class="server-status server-status--offline hidden" id="serverStatus" role="status"></div>
       <div class="relay-setup-banner hidden" id="relaySetupBanner" role="alert">
-        <strong>Top-up on Vercel needs a relay.</strong> Bakong blocks cloud servers. On your PC: <code>npm start</code> then <code>ngrok http 8787</code> — paste the https URL in Advanced → Relay URL (keep both running).
+        <strong>One-time setup (Vercel payments).</strong> On your PC open a terminal in this project folder and run <code>npm run relay</code>. Copy the <strong>https</strong> link from the terminal, paste below, click <strong>Save relay</strong>. Keep that terminal open while customers pay.
         <label class="relay-setup-field">
-          <span>Relay URL (ngrok)</span>
-          <input type="url" id="topupRelayUrl" class="server-setup-input" placeholder="https://xxxx.ngrok-free.app" spellcheck="false" />
+          <span>Relay URL (from npm run relay)</span>
+          <input type="url" id="topupRelayUrl" class="server-setup-input" placeholder="https://xxxx.loca.lt" spellcheck="false" />
           <button type="button" class="server-retry-btn" id="saveRelayBtn">Save relay</button>
         </label>
       </div>

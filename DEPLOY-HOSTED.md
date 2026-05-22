@@ -30,15 +30,24 @@ Then **Deployments** → **⋯** → **Redeploy** (must redeploy after env chang
 Check: open `https://dyna-store3.vercel.app/api/health`  
 You want: `"hasJwt": true` and `"bakongReachable": true`.
 
-## Step 2 — If still blocked (`bakongBlocked: true`)
+## Step 2 — Relay (required for Vercel top-up)
 
-Bakong often returns **HTTP 403** to Vercel servers. MD5 will never work until you add a **relay**:
+Bakong returns **HTTP 403** to Vercel. Use the built-in tunnel:
 
-1. On your PC: `npm start` (port 8787).
-2. Install [ngrok](https://ngrok.com): `ngrok http 8787`
-3. Copy the HTTPS URL, e.g. `https://abc123.ngrok-free.app`
-4. Vercel env: `BAKONG_RELAY_URL` = `https://abc123.ngrok-free.app` (no trailing slash)
-5. **Redeploy** again. Keep `npm start` + ngrok running while testing payments.
+```bash
+npm install
+npm run relay
+```
+
+Copy the **https** URL printed in the terminal.
+
+**Option A — Easiest:** Share `https://YOUR-TUNNEL/index.html` as your shop link (payments work fully).
+
+**Option B — Keep Vercel UI:** On `dyna-store3.vercel.app` → Top up → yellow box → paste URL → **Save relay**. Keep `npm run relay` running.
+
+Windows: double-click `start-relay.bat`.
+
+Optional Vercel env: `BAKONG_RELAY_URL` = same https URL → redeploy.
 
 ## Step 3 — Redeploy latest code
 

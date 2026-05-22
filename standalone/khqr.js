@@ -263,7 +263,13 @@
     const input = document.getElementById('bakongRelay')
     const typed = String(input?.value || '').trim().replace(/\/$/, '')
     const stored = String(localStorage.getItem(RELAY_KEY) || '').trim().replace(/\/$/, '')
-    return typed || stored || String(cfg.relayUrl || global.DYNA_RUNTIME_CONFIG?.relayUrl || '').trim().replace(/\/$/, '')
+    const auto = String(global.DYNA_RELAY_AUTO?.relayUrl || '').trim().replace(/\/$/, '')
+    return (
+      typed ||
+      stored ||
+      auto ||
+      String(cfg.relayUrl || global.DYNA_RUNTIME_CONFIG?.relayUrl || '').trim().replace(/\/$/, '')
+    )
   }
 
   function markBakongCloudBlocked(blocked) {
@@ -291,9 +297,20 @@
   }
 
   function relaySetupMessage() {
-    return (
-      'Bakong blocks Vercel. Run: npm start → ngrok http 8787 → paste ngrok URL in Advanced → Relay URL (keep both running).'
-    )
+    return 'Bakong blocks Vercel. On your PC run: npm run relay — copy the HTTPS link → paste below → Save relay (keep terminal open).'
+  }
+
+  async function testRelayHealth(url) {
+    const base = String(url || '').trim().replace(/\/$/, '')
+    if (!base.startsWith('https://')) return false
+    try {
+      const res = await fetch(`${base}/api/health`, { method: 'GET', mode: 'cors', cache: 'no-store' })
+      if (!res.ok) return false
+      const h = await res.json()
+      return Boolean(h.hasJwt || h.bakongReachable || h.ok)
+    } catch {
+      return false
+    }
   }
 
   const MERCHANT = {
@@ -2316,6 +2333,7 @@
     getRelayUrl,
     paymentVerifyPossible,
     relaySetupMessage,
+    testRelayHealth,
     saveSettings,
     formatKhr,
     formatUsd,

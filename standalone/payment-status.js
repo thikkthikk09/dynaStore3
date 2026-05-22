@@ -44,23 +44,57 @@
     }
   }
 
+  async function applyRelayUrl(url, statusEl) {
+    const base = String(url || '').trim().replace(/\/$/, '')
+    if (!base.startsWith('https://')) {
+      setStatus('<strong>Invalid URL.</strong> Use https://… from <code>npm run relay</code>', 'offline')
+      return false
+    }
+    if (statusEl) statusEl.textContent = 'Testing relay…'
+    const ok = (await window.Khqr?.testRelayHealth?.(base)) ?? false
+    if (!ok) {
+      setStatus(
+        `<strong>Relay not reachable.</strong> Run <code>npm run relay</code> on your PC, copy the HTTPS link, then Save again.`,
+        'offline',
+      )
+      return false
+    }
+    try {
+      localStorage.setItem(RELAY_KEY, base)
+    } catch {
+      /* ignore */
+    }
+    const relayInput = document.getElementById('bakongRelay')
+    if (relayInput) relayInput.value = base
+    window.Khqr?.saveSettings?.()
+    showRelayBanner(false)
+    hideStatus()
+    window.DYNA_PAYMENT_API_READY = true
+    try {
+      sessionStorage.removeItem('dyna_bakong_cloud_blocked')
+    } catch {
+      /* ignore */
+    }
+    void window.Khqr?.resumePendingTopup?.()
+    return true
+  }
+
   function bindRelayBanner() {
-    document.getElementById('saveRelayBtn')?.addEventListener('click', () => {
-      const url = document.getElementById('topupRelayUrl')?.value?.trim().replace(/\/$/, '') || ''
-      if (!url) return
-      try {
-        localStorage.setItem(RELAY_KEY, url)
-      } catch {
-        /* ignore */
-      }
-      const relayInput = document.getElementById('bakongRelay')
-      if (relayInput) relayInput.value = url
-      window.Khqr?.saveSettings?.()
-      showRelayBanner(false)
-      hideStatus()
-      window.DYNA_PAYMENT_API_READY = true
-      void window.Khqr?.resumePendingTopup?.()
+    document.getElementById('saveRelayBtn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('saveRelayBtn')
+      const url = document.getElementById('topupRelayUrl')?.value?.trim() || ''
+      if (btn) btn.disabled = true
+      await applyRelayUrl(url, null)
+      if (btn) btn.disabled = false
     })
+  }
+
+  async function tryAutoRelayFromBoot() {
+    const auto = String(window.DYNA_RELAY_AUTO?.relayUrl || '').trim().replace(/\/$/, '')
+    const stored = relayUrl()
+    const candidate = stored || auto
+    if (!candidate.startsWith('https://')) return false
+    return applyRelayUrl(candidate, null)
   }
 
   function hasLocalApi() {
@@ -271,6 +305,13 @@
   }
 
   async function checkNow() {
+    if (hasLocalApi() && location.port === '8787') {
+      showRelayBanner(false)
+      hideStatus()
+      window.DYNA_PAYMENT_API_READY = true
+      return true
+    }
+
     if (location.protocol === 'file:') {
       setStatus(
         '<strong>Wrong URL.</strong> Open <a href="https://dyna-store3.vercel.app">dyna-store3.vercel.app</a> or run <code>npm start</code>.',
@@ -297,12 +338,19 @@
     if (await tryQuickReady()) return true
 
     if (isVercel()) {
-      if (relayUrl()) return markApiReady(relayUrl())
+      if (relayUrl()) {
+        const ok = await (window.Khqr?.testRelayHealth?.(relayUrl()) ?? false)
+        if (ok) {
+          showRelayBanner(false)
+          return markApiReady(relayUrl())
+        }
+      }
+      if (await tryAutoRelayFromBoot()) return true
       const pubHealth = await probeHealth(PUBLIC_API)
       if (pubHealth.data?.bakongBlocked || pubHealth.data?.hint?.includes('403')) {
         showRelayBanner(true)
         setStatus(
-          '<strong>Bakong blocks Vercel.</strong> Run <code>npm start</code> + <code>ngrok http 8787</code>, paste ngrok URL below. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>',
+          '<strong>Bakong blocks Vercel.</strong> On your PC: <code>npm run relay</code> → copy HTTPS link → paste below → Save relay. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>',
           'offline',
         )
         return false
@@ -311,7 +359,7 @@
       if (await tryQuickReady()) return true
       showRelayBanner(true)
       setStatus(
-        '<strong>Payments need a relay.</strong> <code>npm start</code> → <code>ngrok http 8787</code> → paste URL in yellow box. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>',
+        '<strong>Payments need a relay.</strong> On your PC run <code>npm run relay</code>, copy the HTTPS link, paste in yellow box → Save relay. <button type="button" class="server-retry-btn" id="serverRetry">Retry</button>',
         'offline',
       )
       return false

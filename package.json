@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
+    "relay": "node server.mjs --tunnel",
     "bakong:token": "node scripts/bakong-token.mjs",
     "dev": "vite",
     "dev:react": "vite --open /react.html",
@@ -12,6 +13,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "localtunnel": "^2.0.2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

@@ -6,14 +6,17 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { createGameUploadApi, MAX_GAME_BYTES } from './server/game-uploads.mjs'
-import { ensureServerJwtAvailable, normalizeJwt } from './api/bakong-lib.mjs'
+import { callCheckMd5, ensureServerJwtAvailable, normalizeJwt } from './api/bakong-lib.mjs'
 import { handlePaymentVerify } from './api/payment-handler.mjs'
 import { generateKhqrIndividual } from './api/khqr-generate.mjs'
 import { loadDotenv } from './scripts/load-dotenv.mjs'
 import { fixSwappedBakongEnv, validateBakongEnv } from './scripts/fix-bakong-env.mjs'
 import { runtimeConfigJs } from './api/runtime-config.mjs'
+import { startPaymentTunnel, printRelayBanner } from './scripts/tunnel.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const useTunnel = process.argv.includes('--tunnel') || process.env.DYNA_TUNNEL === '1'
+let activeRelayUrl = ''
 const ROOT = __dirname
 loadDotenv(ROOT)
 if (fixSwappedBakongEnv()) {
@@ -313,6 +316,13 @@ async function handleRequest(req, res) {
     return
   }
 
+  if (req.method === 'GET' && req.url === '/api/relay-url') {
+    return sendJson(res, 200, {
+      relayUrl: activeRelayUrl || null,
+      ok: Boolean(activeRelayUrl),
+    })
+  }
+
   if (req.method === 'GET' && (req.url === '/api/health' || req.url === '/api/warm-jwt')) {
     const jwt = await ensureServerJwtAvailable()
     if (jwt.startsWith('eyJ') && jwt !== serverJwt) {
@@ -320,16 +330,29 @@ async function handleRequest(req, res) {
       saveRuntime({ email: activeEmail(), jwt: serverJwt })
     }
     const hasJwt = jwt.startsWith('eyJ')
+    let bakongReachable = false
+    if (hasJwt) {
+      const probe = await callCheckMd5('00000000000000000000000000000000', jwt)
+      bakongReachable =
+        probe._bakongHttp !== 403 &&
+        (probe.responseCode !== undefined || /not found/i.test(String(probe.responseMessage)))
+    }
     return sendJson(res, 200, {
-      ok: hasJwt,
+      ok: hasJwt && (bakongReachable || !process.env.VERCEL),
       hasToken: hasJwt,
       hasJwt,
       email: activeEmail() || process.env.BAKONG_EMAIL || null,
+      relayUrl: activeRelayUrl || null,
+      hasRelay: Boolean(activeRelayUrl),
+      bakongReachable,
+      bakongBlocked: false,
       gameUploads: req.url === '/api/health',
       maxGameUploadGb:
         req.url === '/api/health' ? Math.floor(MAX_GAME_BYTES / (1024 ** 3)) : undefined,
       hint: hasJwt
-        ? null
+        ? activeRelayUrl
+          ? 'Relay active — paste this URL on Vercel Top-up if using dyna-store3.vercel.app'
+          : null
         : 'Set BAKONG_TOKEN in .env (or BAKONG_EMAIL + BAKONG_REGISTER_TOKEN)',
     })
   }
@@ -433,4 +456,22 @@ server.listen(PORT, HOST, () => {
     console.log('  JWT:   missing — enter register email on top-up page')
   }
   console.log('')
+
+  if (useTunnel) {
+    startPaymentTunnel({ port: PORT, root: ROOT })
+      .then(({ url }) => {
+        activeRelayUrl = url
+        printRelayBanner(url, PORT)
+      })
+      .catch((err) => {
+        console.log('')
+        console.log('  Tunnel failed:', err.message)
+        console.log('  Try: npm install')
+        console.log('  Or:  ngrok http', PORT, '  then paste ngrok URL on the site')
+        console.log('')
+      })
+  } else {
+    console.log('  Vercel payments: run  npm run relay  (auto HTTPS tunnel for Bakong MD5)')
+    console.log('')
+  }
 })

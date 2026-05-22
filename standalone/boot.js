@@ -41,6 +41,7 @@
     'standalone/bakong-khqr-lite.js',
     'standalone/bakong.config.js',
     'standalone/bakong.config.local.js',
+    'standalone/relay.auto.js',
     'standalone/payment-api-base.js',
     'standalone/khqr.js',
     'standalone/game-upload.js',
@@ -68,8 +69,20 @@
     } catch (_) {}
   }
 
+  function applyAutoRelay() {
+    const auto = String(window.DYNA_RELAY_AUTO?.relayUrl || '').trim().replace(/\/$/, '')
+    if (!auto.startsWith('https://')) return
+    try {
+      localStorage.setItem('dyna_relay_url', auto)
+    } catch {
+      /* ignore */
+    }
+    window.DYNA_BAKONG_CONFIG = { ...(window.DYNA_BAKONG_CONFIG || {}), relayUrl: auto }
+  }
+
   function finishBoot() {
     window.DYNA_BOOT_READY = true
+    applyAutoRelay()
     syncApiBaseForHost()
     window.DynaPaymentApiBase?.apply?.()
     try {
@@ -120,7 +133,11 @@
       loadScript(i + 1)
     }
     s.onerror = function () {
-      if (scripts[i].includes('bakong.config') || scripts[i].includes('env-config')) {
+      if (
+        scripts[i].includes('bakong.config') ||
+        scripts[i].includes('env-config') ||
+        scripts[i].includes('relay.auto')
+      ) {
         window.DYNA_BAKONG_CONFIG = window.DYNA_BAKONG_CONFIG || {}
         window.DYNA_RUNTIME_CONFIG = window.DYNA_RUNTIME_CONFIG || {}
         loadScript(i + 1)
